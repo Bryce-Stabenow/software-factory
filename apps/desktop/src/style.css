@@ -81,8 +81,8 @@ button { transition: background-color 120ms, color 120ms, border-color 120ms; }
 .workspace-switcher { padding: 2px 0 17px; }
 .workspace-name { display: flex; width: 100%; align-items: center; gap: 10px; padding: 5px 7px; text-align: left; border-radius: 6px; }
 .workspace-name:hover { background: var(--surface-hover); }
-.workspace-logo { display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; background: var(--ui-primary); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); color: var(--ui-text-inverted); border-radius: 8px; }
-.workspace-logo span { width: 18px; height: 18px; }
+.workspace-logo { display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; background: #171717; border: 1px solid var(--line-strong); border-radius: 8px; }
+.workspace-logo img { display: block; width: 28px; height: 28px; }
 .workspace-name>span:nth-child(2) { font-weight: 650; font-size: 13px; line-height: 1.5; }
 .workspace-name small { display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
 .workspace-chevron { margin-left: auto; width: 13px; color: var(--faint); }

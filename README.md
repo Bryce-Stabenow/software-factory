@@ -1,3 +1,5 @@
+<img src="apps/desktop/public/kulumin-icon.svg" width="80" height="80" alt="Kulumin amber ship" />
+
 # Kulumin
 
 A local, single-user software factory with deliberate human approval gates, built from [the product specification](software-factory-spec.md).
@@ -55,7 +57,9 @@ Search lists by title or issue ID, filter by project/priority/provider, and swit
 
 Icons are bundled locally; the interface loads no remote fonts or icon services. Theme and reduced-motion preferences are respected without changing native CSP or approval requirements.
 
-![Neutral and amber workspace](docs/screenshots/ui-amber-neutral.jpg)
+![Neutral and amber workspace with the ship logo](docs/screenshots/ui-final-brand.jpg)
+
+The amber ship uses three closely spaced swept sails and a low hull in three shades of amber. It is defined in `apps/desktop/public/kulumin-mark.svg`. Run `npm run icons` after editing it to regenerate the favicon/app SVG, PNG sizes, and macOS ICNS. Generated native icons are checked in; desktop packaging also regenerates them automatically to keep every surface in sync. See [the branding guide](docs/branding.md).
 
 ## Requests and revisions
 

@@ -21,9 +21,10 @@
     "test:implementation": "node --import tsx scripts/smoke-build.ts",
     "service": "node dist/apps/factory-service/src/main.js",
     "prepare:desktop": "node scripts/prepare-desktop.mjs",
-    "package:desktop": "npm run build && npm run prepare:desktop && npm run tauri --workspace @factory/desktop -- build --config src-tauri/tauri.release.conf.json --bundles app --ci --no-sign -- --locked --offline && node scripts/finalize-desktop.mjs",
+    "package:desktop": "npm run icons && npm run build && npm run prepare:desktop && npm run tauri --workspace @factory/desktop -- build --config src-tauri/tauri.release.conf.json --bundles app --ci --no-sign -- --locked --offline && node scripts/finalize-desktop.mjs",
     "test:package": "node scripts/smoke-package.mjs",
-    "restore": "node --import tsx scripts/restore-backup.ts"
+    "restore": "node --import tsx scripts/restore-backup.ts",
+    "icons": "node scripts/generate-icons.mjs"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

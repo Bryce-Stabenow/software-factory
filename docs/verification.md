@@ -112,3 +112,30 @@ The refreshed ZIP remains locally ad-hoc signed and verified, without notarizati
 ### Default neutral and amber palette
 
 Nuxt UI now defaults to `neutral: 'neutral'` and `primary: 'amber'`. Shared layout tokens use neutral grays, amber 700 for light-theme primary controls, and amber 400 with dark text for dark-theme primary controls. Logo, project marks, selection, focus, and diff hunk accents use the same theme tokens. Both themes were visually verified in the browser; production renderer/typechecking and the signed native package build passed. Preview: [neutral and amber](screenshots/ui-amber-neutral.jpg).
+
+
+### Ship identity and local fixture cleanup
+
+Stopped the identified Vite preview service and cleared the entire workspace `.factory/` directory (approximately 5.2 MiB). All recorded test worktree Git references resolved inside disposable repositories under that directory. The folder is empty after verification; the packaged application's normal Application Support data was not changed. Historical fixture paths in this document describe completed runs and have now been removed. Development launches recreate their own local data as needed.
+
+Replaced the layered logo with a simple amber ship bearing a path-drawn K on its sail. The SVG mark is shared by the sidebar and the reproducible `npm run icons` pipeline, which creates the browser icon, five PNG sizes, and explicit macOS ICNS. Production builds and native signing passed. The packaged ICNS exactly matches the source ICNS, and Info.plist references it. Browser inspection found no warnings/errors and confirmed the mark in the sidebar. That preview used temporary data outside `.factory/` and its service was stopped afterward. Screenshot: [ship logo in the workspace](screenshots/ui-ship-logo.jpg).
+
+
+### Swept-sail logo refinement
+
+Refined the mark to three curved, ascending sails over a low swept hull, following the requested nautical silhouette reference, with an inset K on the main sail. Regenerated the favicon/app SVG, all PNG sizes, and native ICNS from the same vector source. Inspected the rasterized icon for silhouette and K placement. The runtime data folder remains empty. Earlier ship screenshots show the superseded first design.
+
+
+### Refined ship details and serif monogram
+
+Added restrained amber tonal variation, curved sail seams, and two hull inlays. Replaced the thick square-ended K with a custom outlined, slightly slanted serif monogram that requires no external font. Adjusted seam spacing to keep the glyph clear. Regenerated SVG, PNG, and ICNS assets and inspected rasterized icons at 256 and 512 pixels.
+
+
+### Simplified, tightly spaced amber ship
+
+Removed the monogram and all line details. The current mark contains four solid paths in three amber shades. Enlarged the silhouette within its viewBox and tightened the spaces between sails and hull. Regenerated all browser/native icon assets and inspected the 256- and 512-pixel renders. The `.factory/` directory remains empty. Earlier logo images and descriptions above document superseded iterations.
+
+
+### Approved identity applied consistently
+
+The simplified three-amber ship is now the approved identity. Replaced the unused legacy green native SVG, added the approved logo to the README, refreshed the README screenshot, and documented the canonical artwork and palette in `branding.md`. Desktop packaging now regenerates all icons automatically. The final renderer/typecheck/native build and signature verification passed; the bundled ICNS matches its generated source byte for byte. Browser verification confirmed the current sidebar mark with no warnings/errors. The preview used temporary data, was stopped afterward, and `.factory/` remains empty. Current screenshot: [approved identity](screenshots/ui-final-brand.jpg).
