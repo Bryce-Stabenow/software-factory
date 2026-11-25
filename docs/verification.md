@@ -171,3 +171,25 @@ Automated coverage exercises strict versioned YAML parsing, unsupported YAML fea
 The opt-in `npm run test:initialization` smoke passed against the real Codex app-server using a disposable Git worktree and a local npm fixture dependency. Sandboxed `npm ci --include=dev` succeeded with the initialization network policy enabled; subsequent `npm test` succeeded with network disabled. Git source remained clean. The smoke makes no inference calls or registry downloads; protocol tests separately assert that initialization alone can opt into network and that verification defaults to network disabled.
 
 Desktop packaging includes the pinned YAML runtime dependency. Relocated package smoke checks YAML read/write, local permission defaults, resource hashes, checkout independence, request/history persistence, schema 7 and backup/restore. Local packaging remains ad-hoc signed; no notarization or publication was performed.
+
+
+## Repository folder picker — recovered and verified
+
+The desktop-only Choose folder control uses the Tauri dialog plugin with `directory: true` and `multiple: false`, registered in the native builder with only `dialog:allow-open` on the main window. Selection populates the existing editable path field and submits through project.add; browser development retains manual entry.
+
+The original implementation stopped before dependency provisioning. Its npm checks failed with `sh: tsx: command not found` because this separate Git worktree had no node_modules. Four retries therefore never exercised tests. Both dependency lockfiles also needed real package-manager resolution. A later echo-only check was not test evidence.
+
+Recovery resolved npm registry integrity metadata, generated the Rust dialog dependency graph and checksums with Cargo, installed locked npm development dependencies using `npm ci --include=dev`, and fetched the locked native crates. The existing npm test suite passed all 97 tests. Production service/Vue builds and typechecking passed; the Tauri release build succeeded with `--locked --offline`, and native code signatures were verified.
+
+A second startup issue was reproduced in the no-network validation sandbox: the tsx CLI tries to create an IPC socket and receives EPERM. The test script now uses `node --import tsx --test tests/*.test.ts`, preserving the same test files and TypeScript transform without the CLI socket. A sandbox probe using that entry point passed all 15 workflow tests. The factory's final validation records rerun the complete suite, typecheck, and build for the committed recovery HEAD; those records remain authoritative for final review.
+
+Native verification used the packaged app with a disposable data directory and PATH restricted to /usr/bin:/bin:
+
+- Choose folder opened the operating-system directory dialog.
+- Cancelling returned to the unchanged connection form without creating a project.
+- Selecting a disposable Git repository whose path contains spaces and Unicode populated Repository path while preserving the project name.
+- Connect repository registered that selection and Projects displayed the canonical path.
+- After a complete app restart using the same test data directory, the selected project remained present.
+- Blank required fields left submission disabled. Separate picker activity, duplicate-launch guards, error handling, and stale-result guards were inspected in source; synthetic OS-dialog errors and dismissal races were not forced.
+
+Browser verification used separate disposable data. The connection form displayed manual path entry and its desktop-picker explanation, with no unusable Choose folder control. Entering the same Git repository path and submitting registered the project successfully. No model calls or real repository tasks were started by these UI checks. The factory app's ordinary project/request data was kept separate.

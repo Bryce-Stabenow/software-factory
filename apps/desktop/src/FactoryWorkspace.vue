@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import type { Command, DomainEvent, RepositoryConfiguration, LocalProjectSettings, Plan, Project, Request, Snapshot, Task, WorkspaceDetails } from '../../../packages/contracts/src/index';
-import { command } from './api';
+import { command, nativeDesktop, selectRepositoryFolder } from './api';
 import ProjectExecutionSettings from './ProjectExecutionSettings.vue';
 import WorkspacePanel from './WorkspacePanel.vue';
 import FinalReviewPanel from './FinalReviewPanel.vue';
@@ -49,6 +49,24 @@ const currentRun = computed(() => data.value?.runs.filter(run => run.task_id ===
 const openQuestions = computed(() => data.value?.questions.filter(question => question.task_id === selectedId.value && question.plan_revision_id === selected.value?.current_plan_revision_id && question.status === 'open') ?? []);
 const form = ref({ projectId: '', title: '', body: '', kind: 'feature' as Request['type'], priority: 'normal', criteria: '' });
 const projectForm = ref({ name: '', path: '' });
+const pickingFolder = ref(false);
+const pickerError = ref('');
+let projectDialogSession = 0;
+watch(showProject, () => { projectDialogSession++; pickerError.value = ''; }, { flush: 'sync' });
+async function chooseRepositoryFolder() {
+  if (!nativeDesktop || !showProject.value || pickingFolder.value || busy.value) return;
+  const session = projectDialogSession;
+  pickingFolder.value = true;
+  pickerError.value = '';
+  try {
+    const path = await selectRepositoryFolder();
+    if (showProject.value && session === projectDialogSession && path !== null) projectForm.value.path = path;
+  } catch (cause) {
+    if (showProject.value && session === projectDialogSession) pickerError.value = String(cause instanceof Error ? cause.message : cause);
+  } finally {
+    pickingFolder.value = false;
+  }
+}
 const setupProjectId = ref<string | null>(null);
 const setupOnboarding = ref(false);
 const setupProject = computed(() => data.value?.projects.find(project => project.id === setupProjectId.value));
@@ -160,7 +178,7 @@ onMounted(async () => {
     catch { connected.value = false; }
   }, 2000);
 });
-onUnmounted(() => { clearInterval(timer); window.removeEventListener('keydown', handleKeydown); });
+onUnmounted(() => { projectDialogSession++; clearInterval(timer); window.removeEventListener('keydown', handleKeydown); });
 
 watch(detailTab, async () => { await nextTick(); document.querySelector('.issue-detail-scroll')?.scrollTo({ top: 0 }); });
 const taskOpen = computed({ get: () => !!selectedId.value, set: value => { if (!value) selectedId.value = null; } });
@@ -212,6 +230,8 @@ async function saveProjectSettings(settings: { configuration: RepositoryConfigur
   if (result) { setupProjectId.value = null; toast.add({ title: 'Project settings saved', description: 'Saved .kulumin.yml. Commit it on the default branch before creating a new task worktree.', icon: 'i-lucide-check' }); }
 }
 async function registerProject() {
+  if (!showProject.value || busy.value || pickingFolder.value || !projectForm.value.name.trim() || !projectForm.value.path.trim()) return;
+  pickerError.value = '';
   const result = await act({ type: 'project.add', path: projectForm.value.path, name: projectForm.value.name }) as { id: string } | undefined;
   if (result) { showProject.value = false; projectForm.value = { name: '', path: '' }; page.value = 'Projects'; setupOnboarding.value = true; setupProjectId.value = result.id; }
 }
@@ -282,7 +302,7 @@ function handleKeydown(event: KeyboardEvent) {
     <template #footer><span class="dialog-keyboard-hint"><UKbd value="meta" /><UKbd>↵</UKbd> to save for later</span><UButton color="neutral" variant="ghost" :disabled="busy" @click="showCreate = false">Cancel</UButton><UButton type="submit" form="request-form" color="neutral" variant="outline" :loading="busy" :disabled="!form.projectId || !form.title.trim() || !form.body.trim() || editingRequest?.status === 'archived'">{{ editingRequest && !canStartRequest ? 'Save changes' : 'Save for later' }}</UButton><UButton v-if="canStartRequest" icon="i-lucide-play" :loading="busy" :disabled="!form.projectId || !form.title.trim() || !form.body.trim()" @click="createRequest(true)">Start task</UButton></template>
   </UModal>
 
-  <UModal v-model:open="showProject" title="Connect a repository" description="Choose an existing local Git repository." :ui="{ content: 'project-dialog', header: 'dialog-header', body: 'dialog-body', footer: 'dialog-footer' }"><template #body><form id="project-form" class="request-form" @submit.prevent="registerProject"><UAlert v-if="error" color="error" variant="soft" :description="error" /><UFormField label="Project name" required><UInput v-model="projectForm.name" required maxlength="120" placeholder="My project" class="w-full" /></UFormField><UFormField label="Repository path" required><UInput v-model="projectForm.path" required placeholder="/Users/you/projects/my-project" icon="i-lucide-folder-git-2" class="w-full" /></UFormField><p class="field-note">The main checkout stays untouched. Execution starts disabled; enable it explicitly for trusted repositories.</p></form></template><template #footer><UButton color="neutral" variant="ghost" @click="showProject = false">Cancel</UButton><UButton type="submit" form="project-form" :loading="busy" :disabled="!projectForm.name.trim() || !projectForm.path.trim()">Connect repository</UButton></template></UModal>
+  <UModal v-model:open="showProject" title="Connect a repository" description="Choose an existing local Git repository." :ui="{ content: 'project-dialog', header: 'dialog-header', body: 'dialog-body', footer: 'dialog-footer' }"><template #body><form id="project-form" class="request-form" @submit.prevent="registerProject"><UAlert v-if="error" color="error" variant="soft" :description="error" /><UFormField label="Project name" required><UInput v-model="projectForm.name" required maxlength="120" placeholder="My project" class="w-full" /></UFormField><UFormField label="Repository path" required><div class="flex items-center gap-2"><UInput v-model="projectForm.path" required :disabled="pickingFolder" placeholder="/Users/you/projects/my-project" icon="i-lucide-folder-git-2" class="min-w-0 flex-1" /><UButton v-if="nativeDesktop" type="button" color="neutral" variant="outline" icon="i-lucide-folder-open" :loading="pickingFolder" :disabled="busy || pickingFolder" @click="chooseRepositoryFolder">Choose folder</UButton></div></UFormField><p v-if="!nativeDesktop" class="field-note">Enter the repository’s full local path. Choose folder is available in the desktop app.</p><UAlert v-if="pickerError" color="error" variant="soft" :description="pickerError" role="alert" /><p class="field-note">The main checkout stays untouched. Execution starts disabled; enable it explicitly for trusted repositories.</p></form></template><template #footer><UButton color="neutral" variant="ghost" @click="showProject = false">Cancel</UButton><UButton type="submit" form="project-form" :loading="busy" :disabled="busy || pickingFolder || !projectForm.name.trim() || !projectForm.path.trim()">Connect repository</UButton></template></UModal>
 
   <UModal v-model:open="projectSetupOpen" :title="setupOnboarding ? 'Finish project setup' : 'Project settings'" :description="setupProject ? `Checks and permissions for ${setupProject.name}. You can also save it for planning only.` : 'Configure your project.'" :ui="{ content: 'project-settings-dialog', header: 'dialog-header', body: 'dialog-body' }"><template #body><UAlert v-if="error" color="error" variant="subtle" :description="error" class="mb-4" /><ProjectExecutionSettings v-if="setupProject" :key="setupProject.id" :project="setupProject" :busy="busy" @save="saveProjectSettings" /><div class="setup-later-row"><UButton color="neutral" variant="ghost" :disabled="busy" @click="setupProjectId = null">Set up later</UButton></div></template></UModal>
 

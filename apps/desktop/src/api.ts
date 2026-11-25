@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import type { Command, Response } from '../../../packages/contracts/src/index';
 
 export async function command<T>(payload: Command): Promise<T> {
@@ -17,4 +18,9 @@ export const nativeDesktop = isTauri();
 export async function restartService() {
   if (!nativeDesktop) throw new Error('Restart the development server from its terminal.');
   await invoke('factory_restart');
+}
+
+export async function selectRepositoryFolder(): Promise<string | null> {
+  if (!nativeDesktop) throw new Error('Folder selection is available in the desktop app. Enter the repository path manually in the browser.');
+  return await open({ title: 'Choose a Git repository', directory: true, multiple: false });
 }
