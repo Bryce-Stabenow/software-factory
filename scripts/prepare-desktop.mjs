@@ -14,7 +14,7 @@ cpSync(join(root, 'dist/apps/factory-service'), join(output, 'dist/apps/factory-
 mkdirSync(join(output, 'dist/scripts'), { recursive: true });
 copyFileSync(join(root, 'dist/scripts/restore-backup.js'), join(output, 'dist/scripts/restore-backup.js'));
 cpSync(join(root, 'dist/packages/contracts'), join(output, 'dist/packages/contracts'), { recursive: true });
-for (const name of ['zod', 'bindings', 'file-uri-to-path']) cpSync(realpathSync(join(root, 'node_modules', name)), join(output, 'node_modules', name), { recursive: true, dereference: true });
+for (const name of ['zod', 'yaml', 'bindings', 'file-uri-to-path']) cpSync(realpathSync(join(root, 'node_modules', name)), join(output, 'node_modules', name), { recursive: true, dereference: true });
 const sqlite = join(root, 'node_modules/better-sqlite3'), target = join(output, 'node_modules/better-sqlite3');
 mkdirSync(join(target, 'build/Release'), { recursive: true });
 for (const name of ['package.json', 'LICENSE']) copyFileSync(join(sqlite, name), join(target, name));

@@ -1,3 +1,4 @@
+import { resolveExecutionConfiguration, verificationDigest, type ResolvedExecutionConfig } from '../configuration/repository.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -15,7 +16,7 @@ import { RunPool } from '../scheduler/run-pool.js';
 export function executionConfig(project: Project): ExecutionConfig {
   return executionConfigSchema.parse({ executionEnabled: false, trustedRepository: false, validationCommands: [], ...JSON.parse(project.config_json) });
 }
-type BuildJob = { id: string; taskId: string; stage: 'implement' | 'validate' | 'review' | 'repair'; controller: AbortController; done: Promise<void>; finish: () => void; queuedAt: number };
+type BuildJob = { id: string; taskId: string; stage: 'implement' | 'validate' | 'review' | 'repair' | 'initialize'; controller: AbortController; done: Promise<void>; finish: () => void; queuedAt: number; configDigest?: string };
 export class BuildJobs {
   private jobs = new Map<string, BuildJob>();
   private closing = false;
@@ -24,7 +25,8 @@ export class BuildJobs {
   private project(task: Task) { return this.store.db.prepare('SELECT * FROM projects WHERE id=?').get(task.project_id) as Project; }
   private assertAllowed(task: Task) {
     this.workflow.assertApproved(task);
-    const config = executionConfig(this.project(task));
+    const workspace = this.workspaces.get(task.id);
+    const config = resolveExecutionConfiguration(this.project(task), workspace && existsSync(workspace.path) ? workspace.path : undefined);
     if (!config.executionEnabled || !config.trustedRepository) fail('POLICY_DENIED', 'Enable execution for this trusted repository in Projects before starting an implementation.');
     const source = this.store.db.prepare('SELECT r.provider,r.status FROM plan_revisions p JOIN agent_runs r ON r.id=p.created_by_run_id WHERE p.id=?').get(task.approved_plan_revision_id) as { provider: string; status: string } | undefined;
     if (source?.provider !== 'codex' || source.status !== 'succeeded') fail('POLICY_DENIED', 'Simulated plans cannot authorize real implementation. Generate and approve a real Codex plan.');
@@ -37,7 +39,7 @@ export class BuildJobs {
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
     }
   }
-  enqueue(taskId: string, expectedVersion: number, stage: 'implement' | 'validate' | 'review' | 'repair' = 'implement', recovery?: { expectedHead: string; expectedWorkspaceDigest: string }) {
+  enqueue(taskId: string, expectedVersion: number, stage: 'implement' | 'validate' | 'review' | 'repair' | 'initialize' = 'implement', recovery?: { expectedHead: string; expectedWorkspaceDigest: string }) {
     if (this.closing) fail('CONFLICT', 'The factory service is shutting down.');
     return this.store.transaction(() => {
       let task = this.workflow.getTask(taskId, expectedVersion);
@@ -62,10 +64,11 @@ export class BuildJobs {
         if (!previous || !['BLOCKED', 'FAILED', 'CANCELLED'].includes(task.status) || workspace && !(workspace.cleanup_status === 'creating' && !existsSync(workspace.path))) fail('INVALID_TRANSITION', 'Inspect the preserved worktree and use explicit recovery before restarting implementation.');
         task = this.workflow.transition(task.id, task.version, 'QUEUED_FOR_BUILD', 'build.setup_retried');
       }
-      const attempts = this.store.db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE task_id=? AND stage=? AND approved_plan_id=?').get(task.id, stage, task.approved_plan_revision_id) as { n: number };
+      const attempts = this.store.db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE task_id=? AND stage=? AND approved_plan_id=? AND implementation_started=1').get(task.id, stage, task.approved_plan_revision_id) as { n: number };
       if (stage === 'implement' && attempts.n >= config.maxImplementationAttempts) fail('POLICY_DENIED', 'The implementation attempt limit for this plan is exhausted. Preserve the worktree and revise the request or raise the project limit before retrying.');
       const id = randomUUID(), plan = this.store.plan(task.approved_plan_revision_id!)!;
-      this.store.db.prepare("INSERT INTO agent_runs(id,task_id,stage,provider,status,attempt,started_at,owner_id,owner_pid,heartbeat_at,recovery_stage,approved_plan_id,approved_plan_digest) VALUES (?,?,?,'codex','queued',?,?,?,?,?,?,?,?)").run(id, task.id, stage === 'review' ? 'validate' : stage, attempts.n + 1, new Date().toISOString(), this.pool.ownerId, process.pid, new Date().toISOString(), stage, plan.id, plan.sha256_digest);
+      this.store.db.prepare("INSERT INTO agent_runs(id,task_id,stage,provider,status,attempt,started_at,owner_id,owner_pid,heartbeat_at,recovery_stage,approved_plan_id,approved_plan_digest) VALUES (?,?,?,'codex','queued',?,?,?,?,?,?,?,?)").run(id, task.id, ['review','initialize'].includes(stage) ? 'validate' : stage, attempts.n + 1, new Date().toISOString(), this.pool.ownerId, process.pid, new Date().toISOString(), stage, plan.id, plan.sha256_digest);
+      if (stage === 'implement') this.store.db.prepare('UPDATE agent_runs SET implementation_started=0 WHERE id=?').run(id);
       this.store.event('build.queued', task.project_id, task.id, { runId: id, stage, approvedPlanId: plan.id });
       let finish!: () => void;
       const done = new Promise<void>(resolve => { finish = resolve; });
@@ -79,7 +82,8 @@ export class BuildJobs {
     job.controller.signal.throwIfAborted();
     const task = this.workflow.getTask(job.taskId);
     if (task.status !== status) fail('INVALID_TRANSITION', 'The task is no longer authorized for this stage.');
-    this.assertAllowed(task);
+    const config = this.assertAllowed(task);
+    if (job.configDigest && job.configDigest !== verificationDigest(config)) fail('STALE_EVIDENCE', 'Repository configuration changed during execution.');
     const run = this.store.db.prepare('SELECT owner_id,approved_plan_id,approved_plan_digest FROM agent_runs WHERE id=?').get(job.id) as { owner_id: string; approved_plan_id: string; approved_plan_digest: string };
     const plan = this.store.plan(task.approved_plan_revision_id!)!;
     if (run.owner_id !== this.pool.ownerId || run.approved_plan_id !== plan.id || run.approved_plan_digest !== plan.sha256_digest) fail('APPROVAL_REQUIRED', 'The run lease or approved plan no longer matches this task.');
@@ -105,7 +109,7 @@ export class BuildJobs {
       release = await this.pool.acquire(job.controller.signal, priority.priority, job.queuedAt);
       job.controller.signal.throwIfAborted();
       let task = this.workflow.getTask(job.taskId);
-      const config = this.assertAllowed(task);
+      let config = this.assertAllowed(task);
       this.store.transaction(() => {
         if (job.stage !== 'repair' && !(job.stage === 'review' && task.status === 'CODE_REVIEW')) task = this.workflow.transition(task.id, task.version, 'BUILDING', 'build.started');
         this.store.db.prepare("UPDATE agent_runs SET status='starting',heartbeat_at=? WHERE id=?").run(new Date().toISOString(), job.id);
@@ -114,6 +118,9 @@ export class BuildJobs {
       heartbeat = setInterval(() => this.store.db.prepare('UPDATE agent_runs SET heartbeat_at=? WHERE id=? AND owner_id=?').run(new Date().toISOString(), job.id, this.pool.ownerId), 2000);
       const workspace = await this.workspaces.ensure(task, job.controller.signal, pid => this.event(job, { type: 'process', pid }));
       this.store.db.prepare("UPDATE agent_runs SET status='running' WHERE id=?").run(job.id);
+      config = resolveExecutionConfiguration(this.project(task), workspace.path);
+      job.configDigest = verificationDigest(config);
+      await this.initialize(job, config, job.stage === 'initialize');
       if (job.stage === 'implement' || job.stage === 'repair') await this.implement(job, config, job.stage === 'repair');
       else {
         if (this.workspaces.changed(workspace).length) fail('WORKSPACE_CONFLICT', 'Preserved edits are uncommitted. Resume implementation before validation.');
@@ -135,7 +142,7 @@ export class BuildJobs {
         }
         if (!repairReason) {
           task = this.guard(job, 'VALIDATING');
-          if (digest(executionConfig(this.project(task)).validationCommands) !== digest(config.validationCommands)) fail('STALE_EVIDENCE', 'Validation configuration changed while checks were running.');
+          if (verificationDigest(this.assertAllowed(task)) !== verificationDigest(config)) fail('STALE_EVIDENCE', 'Validation configuration changed while checks were running.');
           this.workflow.transition(task.id, task.version, 'CODE_REVIEW', 'validation.passed');
           this.nextRun(job, 'review');
           const review = await this.review(job);
@@ -167,11 +174,51 @@ export class BuildJobs {
       this.store.transaction(() => {
         this.store.db.prepare("UPDATE agent_runs SET status=?,finished_at=?,error_code=?,summary=COALESCE(summary,?) WHERE id=? AND status IN ('queued','starting','running','stopping')").run(stopped ? this.closing ? 'interrupted' : 'cancelled' : 'failed', new Date().toISOString(), code, message, job.id);
         this.store.db.prepare("UPDATE validation_runs SET status=?,reason=?,finished_at=? WHERE run_id=? AND status='running'").run(stopped ? this.closing ? 'interrupted' : 'cancelled' : code === 'VALIDATION_TIMEOUT' ? 'timed_out' : 'failed', message, new Date().toISOString(), job.id);
+        this.store.db.prepare("UPDATE initialization_runs SET status=?,reason=?,finished_at=? WHERE run_id=? AND status='running'").run(stopped ? this.closing ? 'interrupted' : 'cancelled' : 'failed', message, new Date().toISOString(), job.id);
         const task = this.workflow.getTask(job.taskId);
         if (['QUEUED_FOR_BUILD', 'BUILDING', 'VALIDATING', 'CODE_REVIEW', 'REPAIRING'].includes(task.status)) this.workflow.transition(task.id, task.version, 'BLOCKED', 'build.blocked', message, 'Inspect the preserved worktree and checks, then explicitly resume implementation or re-run validation.');
         this.store.event(stopped ? 'build.interrupted' : 'build.failed', task.project_id, task.id, { runId: job.id, code, message });
       });
     } finally { if (heartbeat) clearInterval(heartbeat); release?.(); }
+  }
+  private async initialize(job: BuildJob, config: ResolvedExecutionConfig, force: boolean) {
+    if (!config.repositoryDigest) return;
+    const task = this.workflow.getTask(job.taskId), workspace = this.workspaces.verify(task);
+    const previous = this.store.db.prepare('SELECT status FROM initialization_runs WHERE workspace_id=? ORDER BY rowid DESC LIMIT 1').get(workspace.id) as { status: string } | undefined;
+    const successful = this.store.db.prepare("SELECT id FROM initialization_runs WHERE workspace_id=? AND config_digest=? AND status='succeeded' ORDER BY rowid DESC LIMIT 1").get(workspace.id, config.initializationDigest);
+    if (!force && successful && previous?.status === 'succeeded') return;
+    const id = randomUUID(), source = this.workspaces.head(workspace), before = this.workspaces.fingerprint(workspace);
+    const directory = join(this.dataDir, 'artifacts', task.id, id);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    this.store.db.prepare("INSERT INTO initialization_runs(id,task_id,workspace_id,run_id,source_sha,file_digest,config_digest,status,started_at) VALUES (?,?,?,?,?,?,?,'running',?)").run(id, task.id, workspace.id, job.id, source, config.repositoryDigest, config.initializationDigest, new Date().toISOString());
+    this.store.event('initialization.started', task.project_id, task.id, { initializationId: id, commands: config.initializationCommands.map(command => command.name), network: config.initializationNetwork });
+    let log = '';
+    const results: { name: string; argv: string[]; exitCode: number }[] = [];
+    const capture = (output: string) => {
+      const safe = redactLog(output).slice(0, 130000);
+      this.store.db.prepare('UPDATE initialization_runs SET log_text=?,results_json=? WHERE id=?').run(safe, JSON.stringify(results), id);
+      writeFileSync(join(directory, 'initialization.log'), safe, { mode: 0o600 });
+      this.store.event('initialization.output', task.project_id, task.id, { initializationId: id });
+    };
+    for (const command of config.initializationCommands) {
+      job.controller.signal.throwIfAborted(); this.assertAllowed(this.workflow.getTask(task.id));
+      const prefix = log + '\n' + command.name + '\n';
+      capture(prefix);
+      let result;
+      try {
+        result = await this.validator.run({ cwd: workspace.path, temporaryDirectory: join(directory, 'temporary'), command, networkAccess: config.initializationNetwork, processId: randomUUID(), signal: job.controller.signal, onProcess: pid => this.event(job, { type: 'process', pid }), onOutput: output => capture(prefix + output) });
+      } catch (error) {
+        if (job.controller.signal.aborted) throw error;
+        fail('POLICY_DENIED', 'Worktree initialization did not complete. Inspect its log and project settings, then retry initialization. No code repair was attempted.');
+      }
+      results.push({ name: command.name, argv: command.argv, exitCode: result.exitCode });
+      log = (prefix + redactLog(result.log)).slice(0, 130000); capture(log);
+      job.controller.signal.throwIfAborted(); this.assertAllowed(this.workflow.getTask(task.id));
+      if (this.workspaces.head(workspace) !== source || this.workspaces.fingerprint(workspace) !== before) fail('WORKSPACE_CONFLICT', 'Initialization changed source files or HEAD. Inspect the preserved worktree before recovery. Hooks may only prepare ignored dependencies and local artifacts.');
+      if (result.exitCode !== 0) fail('POLICY_DENIED', 'Worktree initialization failed. Inspect its log, fix setup, and retry. No implementation or code repair was attempted.');
+    }
+    this.store.db.prepare("UPDATE initialization_runs SET status='succeeded',finished_at=? WHERE id=?").run(new Date().toISOString(), id);
+    this.store.event('initialization.completed', task.project_id, task.id, { initializationId: id, status: 'succeeded' });
   }
   private assertRepairBudget(task: Task) {
     const count = this.store.db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE task_id=? AND stage='repair' AND approved_plan_id=?").get(task.id, task.approved_plan_revision_id) as { n: number };
@@ -192,6 +239,7 @@ export class BuildJobs {
   private async implement(job: BuildJob, config: ExecutionConfig, repair: boolean) {
     const status = repair ? 'REPAIRING' : 'BUILDING';
     const task = this.guard(job, status), workspace = this.workspaces.verify(task), plan = this.store.plan(task.approved_plan_revision_id!)!;
+    this.store.db.prepare('UPDATE agent_runs SET implementation_started=1 WHERE id=?').run(job.id);
     const request = this.store.requestForTask(task);
     const failures = repair ? {
       checks: this.store.db.prepare("SELECT name,commit_sha,status,log_text,reason FROM validation_runs WHERE task_id=? ORDER BY rowid DESC LIMIT 12").all(task.id),
@@ -259,11 +307,11 @@ Snapshot omitted files: ${snapshot.omitted}. Deleted files appear in the diff. I
     this.store.event('review.completed', task.project_id, task.id, { runId: job.id, commitSha: details.currentHead, verdict });
     return { ...safe, verdict };
   }
-  private async validate(job: BuildJob, config: ExecutionConfig) {
+  private async validate(job: BuildJob, config: ResolvedExecutionConfig) {
     const task = this.guard(job, 'VALIDATING'), workspace = this.workspaces.verify(task), head = this.workspaces.head(workspace);
     if (!config.validationCommands.length) fail('POLICY_DENIED', 'No validation commands are configured. Implementation is preserved, but checks are NOT RUN. Configure checks, inspect the worktree, and re-run validation.');
     if (this.workspaces.changed(workspace).length) fail('STALE_EVIDENCE', 'Validation requires a clean current commit.');
-    const before = this.workspaces.fingerprint(workspace), configDigest = digest(config.validationCommands);
+    const before = this.workspaces.fingerprint(workspace), configDigest = verificationDigest(config);
     for (const command of config.validationCommands) {
       this.guard(job, 'VALIDATING');
       const id = randomUUID(), directory = join(this.dataDir, 'artifacts', task.id, id), logPath = join(directory, 'validation.log');
@@ -325,6 +373,7 @@ Snapshot omitted files: ${snapshot.omitted}. Deleted files appear in the diff. I
       for (const run of runs) {
         this.store.db.prepare("UPDATE agent_runs SET status='interrupted',finished_at=?,error_code='SERVICE_RESTART' WHERE id=?").run(new Date().toISOString(), run.id);
         this.store.db.prepare("UPDATE validation_runs SET status='interrupted',reason='The service stopped before the check completed.',finished_at=? WHERE run_id=? AND status='running'").run(new Date().toISOString(), run.id);
+        this.store.db.prepare("UPDATE initialization_runs SET status='interrupted',reason='The service stopped during initialization.',finished_at=? WHERE run_id=? AND status='running'").run(new Date().toISOString(), run.id);
         const task = this.workflow.getTask(run.task_id);
         if (['QUEUED_FOR_BUILD', 'BUILDING', 'VALIDATING', 'CODE_REVIEW', 'REPAIRING'].includes(task.status)) this.workflow.transition(task.id, task.version, 'BLOCKED', 'build.recovery_required', 'The service stopped during implementation or validation. Completion was not assumed; the worktree and logs are preserved.', 'Inspect the current worktree before explicitly resuming. A surviving provider process must stop first.');
         this.store.event('run.interrupted', task.project_id, task.id, { runId: run.id, recovery: 'inspect_worktree' });

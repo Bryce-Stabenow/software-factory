@@ -21,6 +21,20 @@ export interface EvidenceBundle { id: string; task_id: string; commit_sha: strin
 export const validationCommandSchema = z.object({ name: z.string().trim().min(1).max(100), argv: z.array(z.string().max(4000)).min(1).max(100), timeoutMs: z.number().int().min(100).max(300000).default(60000) }).refine(value => value.argv[0].trim().length > 0 && value.argv.every(arg => !arg.includes('\0')), 'Commands require a nonempty executable and no NUL bytes');
 export const executionConfigSchema = z.object({ executionEnabled: z.boolean(), trustedRepository: z.boolean(), validationCommands: z.array(validationCommandSchema).max(12), implementationTimeoutMs: z.number().int().min(1000).max(1800000).default(900000), maxImplementationAttempts: z.number().int().min(1).max(5).default(2) });
 export type ExecutionConfig = z.infer<typeof executionConfigSchema>;
+const repositoryCommand = (maximum: number) => z.object({
+  name: z.string().trim().min(1).max(100), run: z.array(z.string().max(4000)).min(1).max(100),
+  timeout_seconds: z.number().min(.1).max(maximum).default(60),
+}).strict().refine(command => command.run[0].trim().length > 0 && command.run.every(arg => !arg.includes('\0')), 'Commands require an executable and no NUL bytes');
+export const repositoryConfigurationSchema = z.object({
+  version: z.literal(1),
+  worktree_init: z.object({ network: z.boolean().default(false), commands: z.array(repositoryCommand(1800)).max(12) }).strict(),
+  verification: z.object({ commands: z.array(repositoryCommand(300)).max(12) }).strict(),
+}).strict().refine(config => [config.worktree_init.commands, config.verification.commands].every(commands => new Set(commands.map(command => command.name)).size === commands.length), 'Command names must be unique within each section');
+export type RepositoryConfiguration = z.infer<typeof repositoryConfigurationSchema>;
+export const localProjectSettingsSchema = executionConfigSchema.omit({ validationCommands: true }).extend({ initializationNetworkAllowed: z.boolean().default(false) });
+export type LocalProjectSettings = z.infer<typeof localProjectSettingsSchema>;
+export interface RepositoryConfigurationState { path: string; exists: boolean; digest: string | null; configuration: RepositoryConfiguration | null; committed: boolean; error: string | null; authorized: boolean; local: LocalProjectSettings; legacyVerification: ExecutionConfig['validationCommands'] }
+export interface InitializationRun { id: string; task_id: string; workspace_id: string; run_id: string; source_sha: string; file_digest: string; config_digest: string; status: string; log_text: string; reason: string | null; results_json: string; started_at: string; finished_at: string | null }
 const version = z.number().int().positive();
 const id = z.string().uuid();
 const text = z.string().trim().min(1).max(20000);
@@ -28,6 +42,8 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('snapshot') }),
   z.object({ type: z.literal('events.list'), afterSequence: z.number().int().nonnegative() }),
   z.object({ type: z.literal('project.add'), path: text, name: z.string().trim().min(1).max(120) }),
+  z.object({ type: z.literal('project.configuration.get'), projectId: id }),
+  z.object({ type: z.literal('project.configuration.save'), projectId: id, expectedVersion: version, expectedDigest: z.string().length(64).nullable(), configuration: repositoryConfigurationSchema, local: localProjectSettingsSchema }),
   z.object({ type: z.literal('project.configure'), projectId: id, expectedVersion: version, config: executionConfigSchema }),
   z.object({ type: z.literal('request.create'), projectId: id, title: z.string().trim().min(1).max(200), body: text, kind: z.enum(['feature', 'bug', 'refactor', 'chore']), priority: z.enum(['low', 'normal', 'high']), acceptanceCriteria: z.array(text).max(30) }),
   z.object({ type: z.literal('request.update'), requestId: id, expectedVersion: version, projectId: id, title: z.string().trim().min(1).max(200), body: text, kind: z.enum(['feature', 'bug', 'refactor', 'chore']), priority: z.enum(['low', 'normal', 'high']), acceptanceCriteria: z.array(text).max(30) }),
@@ -44,7 +60,7 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('task.retry'), taskId: id, expectedVersion: version, model: z.string().min(1).max(120).optional() }),
   z.object({ type: z.literal('task.startReview'), taskId: id, expectedVersion: version }),
   z.object({ type: z.literal('task.run'), taskId: id, expectedVersion: version }),
-  z.object({ type: z.literal('task.resume'), taskId: id, expectedVersion: version, stage: z.enum(['implement', 'validate', 'review']), expectedHead: z.string().regex(/^[a-f0-9]{40,64}$/), expectedWorkspaceDigest: z.string().length(64) }),
+  z.object({ type: z.literal('task.resume'), taskId: id, expectedVersion: version, stage: z.enum(['implement', 'validate', 'review', 'initialize']), expectedHead: z.string().regex(/^[a-f0-9]{40,64}$/), expectedWorkspaceDigest: z.string().length(64) }),
   z.object({ type: z.literal('task.reviewFinal'), taskId: id, expectedVersion: version, bundleId: id, digest: z.string().length(64), expectedHead: z.string().regex(/^[a-f0-9]{40,64}$/), action: z.enum(['accept', 'request_changes', 'reject']), feedback: z.string().max(20000).default('') }),
   z.object({ type: z.literal('workspace.inspect'), taskId: id }),
   z.object({ type: z.literal('workspace.open'), taskId: id }),
@@ -67,7 +83,7 @@ export interface WorkspaceDetails extends Workspace { currentHead: string; works
 export interface ValidationRun { id: string; task_id: string; commit_sha: string; name: string; argv_json: string; exit_code: number | null; status: string; log_text: string; reason: string | null; started_at: string; finished_at: string | null }
 export interface Question { id: string; task_id: string; plan_revision_id: string; prompt: string; answer: string | null; status: string }
 export interface ProviderHealth { id: 'fake' | 'codex'; available: boolean; authenticated: boolean; message: string; version?: string; models?: { model: string; name: string; isDefault: boolean }[] }
-export interface Snapshot { projects: Project[]; requests: Request[]; requestRevisions: RequestRevision[]; tasks: Task[]; plans: PlanRevision[]; approvals: Approval[]; events: DomainEvent[]; runs: AgentRun[]; questions: Question[]; reviews: Review[]; evidence: EvidenceBundle[]; workspaces: Workspace[]; validations: ValidationRun[]; providers: ProviderHealth[]; cursor: number; health: { provider: 'mixed'; mode: string; service: string } }
+export interface Snapshot { projects: Project[]; requests: Request[]; requestRevisions: RequestRevision[]; tasks: Task[]; plans: PlanRevision[]; approvals: Approval[]; events: DomainEvent[]; runs: AgentRun[]; questions: Question[]; reviews: Review[]; evidence: EvidenceBundle[]; workspaces: Workspace[]; validations: ValidationRun[]; initializations: InitializationRun[]; providers: ProviderHealth[]; cursor: number; health: { provider: 'mixed'; mode: string; service: string } }
 export type ErrorCode = 'INVALID_TRANSITION' | 'STALE_VERSION' | 'APPROVAL_REQUIRED' | 'STALE_PLAN_REVISION' | 'STALE_EVIDENCE' | 'NOT_FOUND' | 'INVALID_INPUT' | 'PROJECT_INVALID' | 'WORKSPACE_CONFLICT' | 'POLICY_DENIED' | 'CONFLICT' | 'INTERNAL_ERROR';
 export type Response<T = unknown> = { ok: true; data: T } | { ok: false; error: { code: ErrorCode; message: string } };
 

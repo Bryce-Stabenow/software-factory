@@ -34,13 +34,20 @@ function start() {
 try {
   current = start(); assert.equal((await current.call({ type: 'snapshot' })).projects.length, 0, 'Release launches do not seed demo repositories');
   const project = await current.call({ type: 'project.add', name: 'Disposable package fixture', path: repo });
+  const configuration = await current.call({ type: 'project.configuration.get', projectId: project.id });
+  assert.equal(configuration.exists, false);
+  await current.call({ type: 'project.configuration.save', projectId: project.id, expectedVersion: 1, expectedDigest: null, configuration: { version: 1, worktree_init: { commands: [] }, verification: { commands: [{ name: 'Fixture', run: ['node', 'test.js'] }] } }, local: { executionEnabled: false, trustedRepository: false } });
+  const savedConfiguration = await current.call({ type: 'project.configuration.get', projectId: project.id });
+  assert.equal(savedConfiguration.configuration.verification.commands[0].name, 'Fixture');
+  assert.equal(savedConfiguration.authorized, true); assert.equal(savedConfiguration.local.initializationNetworkAllowed, false);
+  assert.match(readFileSync(join(repo, '.kulumin.yml'), 'utf8'), /worktree_init:/);
   const request = await current.call({ type: 'request.create', projectId: project.id, title: 'Package persistence fixture', body: 'Original scope', kind: 'chore', priority: 'normal', acceptanceCriteria: ['Original scope preserved'] });
   const task = await current.call({ type: 'task.createFromRequest', requestId: request.id });
   await current.call({ type: 'request.update', requestId: request.id, expectedVersion: 1, projectId: project.id, title: 'Updated package fixture', body: 'Updated scope', kind: 'feature', priority: 'high', acceptanceCriteria: ['Updated scope'] });
   await current.call({ type: 'request.archive', requestId: request.id, expectedVersion: 2, archived: true });
   await current.call({ type: 'task.assign', taskId: task.id, expectedVersion: task.version, provider: 'fake' });
   const snapshot = await current.call({ type: 'snapshot' }); assert.match(snapshot.plans[0].body_json, /Original scope preserved/); assert.equal(snapshot.requests[0].status,'archived');
-  const diagnostics = await current.call({ type: 'diagnostics.get' }); assert.equal(diagnostics.application.packaged,true); assert.equal(diagnostics.storage.integrity,'ok'); assert.equal(diagnostics.storage.schemaVersion,6);
+  const diagnostics = await current.call({ type: 'diagnostics.get' }); assert.equal(diagnostics.application.packaged,true); assert.equal(diagnostics.storage.integrity,'ok'); assert.equal(diagnostics.storage.schemaVersion,7);
   const report = await current.call({ type: 'diagnostics.export' }); assert.doesNotMatch(readFileSync(report.path,'utf8'), /Original scope|Updated scope|repository|empty-home/);
   const backup = await current.call({ type: 'backup.create' }); assert.ok(existsSync(backup.path));
   await current.close(); current = undefined; assert.equal(existsSync(join(data,'service.lock')),false);

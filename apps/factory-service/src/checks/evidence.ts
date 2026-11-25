@@ -1,5 +1,6 @@
+import { resolveExecutionConfiguration, verificationDigest } from '../configuration/repository.js';
 import { randomUUID } from 'node:crypto';
-import type { EvidenceBundle, Review, Task } from '../../../../packages/contracts/src/index.js';
+import type { EvidenceBundle, Review, Task, Project, InitializationRun } from '../../../../packages/contracts/src/index.js';
 import type { Store } from '../persistence/store.js';
 import type { WorkspaceManager } from '../git/workspaces.js';
 import { digest, fail } from '../workflows/engine.js';
@@ -13,10 +14,15 @@ export class EvidenceManager {
     if (details.dirty || details.currentHead !== details.head_sha || details.truncated) fail('STALE_EVIDENCE', 'Final evidence requires the clean recorded HEAD and a complete captured diff.');
     const plan = this.store.plan(task.approved_plan_revision_id ?? '');
     if (!plan || task.current_plan_revision_id !== plan.id || digest(JSON.parse(plan.body_json)) !== plan.sha256_digest) fail('STALE_EVIDENCE', 'The approved plan changed.');
-    const project = this.store.db.prepare('SELECT config_json FROM projects WHERE id=?').get(task.project_id) as { config_json: string };
-    const commands = JSON.parse(project.config_json).validationCommands ?? [];
+    const project = this.store.db.prepare('SELECT * FROM projects WHERE id=?').get(task.project_id) as Project;
+    const config = resolveExecutionConfiguration(project, details.path), commands = config.validationCommands;
     if (!commands.length) fail('STALE_EVIDENCE', 'Required checks are NOT RUN.');
-    const configDigest = digest(commands);
+    const configDigest = verificationDigest(config);
+    let initialization: InitializationRun | undefined;
+    if (config.repositoryDigest) {
+      initialization = this.store.db.prepare('SELECT * FROM initialization_runs WHERE workspace_id=? ORDER BY rowid DESC LIMIT 1').get(details.id) as InitializationRun | undefined;
+      if (!initialization || initialization.status !== 'succeeded' || initialization.config_digest !== config.initializationDigest) fail('STALE_EVIDENCE', 'Successful worktree initialization is required for this configuration.');
+    }
     const checks = commands.map((command: { name: string; argv: string[] }) => {
       const check = this.store.db.prepare('SELECT * FROM validation_runs WHERE task_id=? AND commit_sha=? AND name=? ORDER BY rowid DESC LIMIT 1').get(task.id, details.currentHead, command.name) as Record<string, unknown> | undefined;
       if (!check || check.status !== 'passed' || check.exit_code !== 0 || check.config_digest !== configDigest || check.argv_json !== JSON.stringify(command.argv)) fail('STALE_EVIDENCE', 'Required checks failed, are missing, or are stale for the current commit.');
@@ -29,7 +35,7 @@ export class EvidenceManager {
     const implementations = this.store.db.prepare("SELECT id,stage,summary FROM agent_runs WHERE task_id=? AND stage IN ('implement','repair') AND approved_plan_id=? AND status='succeeded' ORDER BY rowid").all(task.id, plan.id);
     const reviewHistory = this.store.db.prepare('SELECT id,commit_sha,verdict,findings_json,summary FROM reviews WHERE task_id=? ORDER BY rowid').all(task.id);
     const decisions = this.store.db.prepare("SELECT id,action,feedback,commit_sha FROM approvals WHERE task_id=? AND gate='final' AND action='request_changes' ORDER BY rowid").all(task.id);
-    return { taskId: task.id, planId: plan.id, planDigest: plan.sha256_digest, baseSha: details.base_sha, commitSha: details.currentHead, workspaceDigest: details.workspaceDigest, changedFiles: details.changedFiles, diff: details.diff, checks, review: { id: review.id, runId: review.run_id, verdict: review.verdict, findings: JSON.parse(review.findings_json), summary: review.summary }, reviewHistory, implementations, requestedChanges: decisions };
+    return { ...(initialization ? { repositoryDigest: config.repositoryDigest, initialization: { id: initialization.id, configDigest: initialization.config_digest, results: JSON.parse(initialization.results_json) } } : {}), taskId: task.id, planId: plan.id, planDigest: plan.sha256_digest, baseSha: details.base_sha, commitSha: details.currentHead, workspaceDigest: details.workspaceDigest, changedFiles: details.changedFiles, diff: details.diff, checks, review: { id: review.id, runId: review.run_id, verdict: review.verdict, findings: JSON.parse(review.findings_json), summary: review.summary }, reviewHistory, implementations, requestedChanges: decisions };
   }
   create(task: Task) {
     const body = this.body(task), id = randomUUID();

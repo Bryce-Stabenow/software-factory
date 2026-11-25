@@ -1,3 +1,4 @@
+import { resolveExecutionConfiguration, verificationDigest } from '../configuration/repository.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { EvidenceBundle, ErrorCode, Task, TaskStatus } from '../../../../packages/contracts/src/index.js';
 import { planSchema } from '../../../../packages/contracts/src/index.js';
@@ -51,12 +52,12 @@ export class Workflow {
       assertTransition(task.status, next);
       if (['QUEUED_FOR_BUILD','BUILDING','REPAIRING','FINAL_REVIEW','ACCEPTED'].includes(next)) this.assertApproved(task);
       if (next === 'CODE_REVIEW') {
-        const workspace = this.store.db.prepare('SELECT head_sha FROM workspaces WHERE task_id=?').get(id) as { head_sha: string | null } | undefined;
-        const project = this.store.db.prepare('SELECT config_json FROM projects WHERE id=?').get(task.project_id) as { config_json: string };
-        const config = JSON.parse(project.config_json);
+        const workspace = this.store.db.prepare('SELECT head_sha,path FROM workspaces WHERE task_id=?').get(id) as { head_sha: string | null; path: string } | undefined;
+        const project = this.store.db.prepare('SELECT * FROM projects WHERE id=?').get(task.project_id) as import('../../../../packages/contracts/src/index.js').Project;
+        const config = resolveExecutionConfiguration(project, workspace?.path);
         const commands = config.validationCommands ?? [];
         const checks = this.store.db.prepare("SELECT name,config_digest FROM validation_runs WHERE task_id=? AND commit_sha=? AND status='passed'").all(id, workspace?.head_sha ?? '') as { name: string; config_digest: string }[];
-        if (!workspace?.head_sha || !commands.length || !commands.every((command: { name: string }) => checks.some(check => check.name === command.name && check.config_digest === digest(commands)))) fail('STALE_EVIDENCE', 'Current-commit validation evidence is required before code review.');
+        if (!workspace?.head_sha || !commands.length || !commands.every((command: { name: string }) => checks.some(check => check.name === command.name && check.config_digest === verificationDigest(config)))) fail('STALE_EVIDENCE', 'Current-commit validation evidence is required before code review.');
       }
       if (next === 'FINAL_REVIEW' || next === 'ACCEPTED') {
         const evidence = this.verifyFinalEvidence?.(task) ?? fail('STALE_EVIDENCE', 'Verified current-commit evidence is required.');

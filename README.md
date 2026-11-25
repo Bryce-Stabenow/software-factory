@@ -93,7 +93,7 @@ Restore checks database integrity/schema and retains the original worktree paths
 
 1. Register a repository in **Projects**. Its default branch must have an initial commit. Dirty files in the main checkout remain untouched and are not copied into a task’s worktree.
 2. Connecting a repository opens **Finish project setup**. Existing projects have a **Project settings** button. Save it for planning only, set it up later, or explicitly trust the repository and enable implementation.
-3. Add validation checks using a name, command, and timeout in seconds. **Which checks should I add?** explains the options and supplies examples; use only commands your repository actually supports.
+3. Configure **Worktree initialization** and **Verification** with named commands and timeouts. Settings reads and writes `.kulumin.yml` at the repository root. Commit this file on the default branch before starting a new task worktree. Use commands your repository actually supports.
 
    | Check | Example command | Purpose |
    |---|---|---|
@@ -107,7 +107,31 @@ Restore checks database integrity/schema and retains the original worktree paths
 6. Watch the task’s worktree, base/current commit, diff, progress, and validation logs. Successful checks for the exact current commit start independent read-only code review. Older tasks already at `CODE_REVIEW` offer **Revalidate & review**.
 7. Inspect **Final human review**: implementation/repair summaries, limitations, diff, required checks and captured logs, independent findings and history, base/current SHA, and evidence digest. Choose **Accept reviewed commit**, **Request changes**, or **Reject**. Changes/rejection require feedback. Requests for changes stay within the approved plan and use the same three-repair budget; new scope needs a new request and approval.
 
-Checks need dependencies installed in the task worktree; Git does not copy ignored `node_modules` from the main checkout. For npm projects with a lockfile, open that worktree in a terminal and run `npm ci --include=dev` before validating. Missing tools block for setup without consuming code-repair attempts. If a `tsx` CLI script needs a sandbox-blocked IPC socket, use `node --import tsx --test` instead; Kulumin’s own test script uses this entry point. The factory does not install dependencies or grant network access. Open the task worktree to prepare trusted dependencies yourself, or configure commands that work offline. Missing commands are disclosed as **NOT RUN** and block code review. Nonzero exits and timeouts trigger bounded repairs. Source/HEAD changes during validation and changed check configuration block progression and require inspection.
+Initialization runs in order before implementation in each new task worktree. Git does not copy ignored `node_modules` from your main checkout. For npm projects with a lockfile, configure `npm ci --include=dev` in initialization and request network access if downloads are needed. Each user must separately trust the repository, enable execution, and grant initialization network access locally; Git never transfers these permissions. Verification always stays offline.
+
+```yaml
+version: 1
+worktree_init:
+  network: true
+  commands:
+    - name: Install dependencies
+      run: [npm, ci, --include=dev]
+      timeout_seconds: 300
+verification:
+  commands:
+    - name: Tests
+      run: [npm, test]
+      timeout_seconds: 300
+    - name: Build
+      run: [npm, run, build]
+      timeout_seconds: 300
+```
+
+Commands are literal argument arrays, without implicit shell expansion. Invoke custom hooks as scripts, for example `[node, scripts/setup.mjs]`. Hooks may prepare ignored dependencies/artifacts; source or HEAD changes block the task and preserve those changes for inspection. Commands are bounded to 12 per section, with initialization timeouts up to 1,800 seconds and verification up to 300 seconds. The file is strict versioned YAML (no aliases, custom tags, duplicate keys, symlinks, or unknown settings).
+
+Successful initialization is remembered per managed worktree and initialization configuration. Failures, cancellations and service restarts preserve setup logs, block progression and do not consume code-repair attempts. Recovery retries unfinished setup; **Initialize & revalidate** explicitly reruns successful setup before fresh verification and review. Existing tasks/projects without YAML retain their previous local verification configuration until migrated through settings. A file changed outside settings must be reviewed and saved locally before execution; uncommitted configuration cannot authorize a new worktree. Verification and final evidence bind to the committed YAML version.
+
+Missing tools block for setup without consuming code-repair attempts. If a `tsx` CLI script needs a sandbox-blocked IPC socket, use `node --import tsx --test` instead; Kulumin’s own test script uses this entry point. Missing verification commands are disclosed as **NOT RUN** and block code review. Verification nonzero exits and timeouts trigger bounded repairs, while source/HEAD changes or changed configuration require inspection.
 
 The implementer uses bounded list/read/write/delete tools confined to the task worktree. Shell, Git, network, plugins, and subagents are unavailable to the model. File edits require the digest from the latest read, and the service checks approval, task status, and run ownership before each operation. The service verifies and commits actual Git changes with hooks/signing disabled. Repositories with executable Git filters are currently blocked. Binary, symlink, protected metadata, and oversized file edits are unsupported.
 
@@ -117,9 +141,9 @@ Project code is sent to OpenAI through the signed-in Codex account. Snapshot/pat
 
 **Cancel task** and **Stop all workers** signal workers and terminate owned process groups as needed. The task’s branch, worktree, partial edits, commits, logs, and approval history remain. A stopping worker must terminate before recovery is available.
 
-On restart, unfinished runs/checks become interrupted, never successful. Missing or changed worktree metadata is surfaced without resetting branches or recreating missing worktrees. A prior live process PID blocks recovery until inspected/stopped. The service owns an OS-backed exclusive SQLite lock in `service-owner.db`; a diagnostic `service.lock` also prevents overlap with older service versions. OS ownership releases on process crash.
+On restart, unfinished runs, initialization and checks become interrupted, never successful. Missing or changed worktree metadata is surfaced without resetting branches or recreating missing worktrees. A prior live process PID blocks recovery until inspected/stopped. The service owns an OS-backed exclusive SQLite lock in `service-owner.db`; a diagnostic `service.lock` also prevents overlap with older service versions. OS ownership releases on process crash.
 
-For a stopped task, **Refresh changes**, inspect the current HEAD and diff, then choose **Resume implementation** or **Revalidate & review**. Recovery binds to the displayed HEAD and worktree fingerprint; stale inspections are rejected. Implementation continues in the existing worktree using a fresh Codex session. Validation-only recovery requires a clean committed worktree and does not invoke an implementer; it runs fresh checks and independent review. Full provider-session resume is not promised.
+For a stopped task, **Refresh changes**, inspect the current HEAD and diff, then choose **Resume implementation**, **Revalidate & review**, or **Initialize & revalidate**. Recovery binds to the displayed HEAD and worktree fingerprint; stale inspections are rejected. Implementation continues in the existing worktree using a fresh Codex session. Validation-only recovery requires a clean committed worktree and does not invoke an implementer; it runs fresh checks and independent review. Full provider-session resume is not promised.
 
 The shared queue permits **two workers per factory service**, including planning/build/check/review/repair stages. Implementation defaults to a 15-minute model deadline, two attempts per approved plan, bounded file writes, and one-minute bounds on mutating Git operations. Check timeouts are per command. Project settings cannot change while that project has pending/active runs. Changing required checks invalidates prior passing evidence and acceptance. Worktree edits or later commits likewise revoke current acceptance on inspection/restart, preserving decision history. Final decisions always recheck the current HEAD and full evidence digest server-side.
 
@@ -157,8 +181,11 @@ Opt-in real-provider checks use the existing Codex sign-in and disposable sample
 npm run test:codex
 npm run test:codex -- --probe-only
 npm run test:implementation
+npm run test:initialization
 ```
 
 The implementation smoke test makes real planning, implementation, independent review, and human-requested repair turns, approves/accepts only its disposable fixture, verifies fresh commits/checks/reviews and exact final acceptance, preserves the main checkout, probes workspace-write/network restrictions, and checks validation process-tree cancellation. Tested with **Codex CLI 0.153.4**. A model catalog is not an entitlement guarantee; access is verified by successful inference. Models are selected before a run and never silently changed mid-run.
 
 See [implementation status](docs/implementation-status.md), [verification record](docs/verification.md), [review/acceptance ADR](docs/architecture-decisions/0005-review-repair-and-final-acceptance.md), [daily-use desktop ADR](docs/architecture-decisions/0006-daily-use-desktop-and-request-history.md), and [worktree/execution ADR](docs/architecture-decisions/0004-approved-worktree-execution.md). Richer provider/auto-assignment policy, optional notifications/PR integration, notarized distribution, and explicit worktree cleanup remain future work. Claude stays disabled.
+
+`npm run test:initialization` verifies real app-server sandboxed dependency setup (`npm ci`) and offline verification (`npm test`) in a disposable Git worktree using a local fixture dependency. It makes no model calls or registry downloads.

@@ -66,7 +66,7 @@ test('support diagnostics contain no request content, paths, source, credentials
   const h = setup(t); const request = h.create(), task = h.call<Task>({ type: 'task.createFromRequest', requestId: request.id });
   h.store.db.prepare("INSERT INTO agent_runs(id,task_id,stage,provider,status,attempt,started_at,error_code,summary) VALUES (?,?,'plan','codex','failed',1,?,'PROVIDER_ERROR',?)").run(randomUUID(), task.id, new Date().toISOString(), 'password=hidden private transcript');
   const report = h.call<Diagnostics>({ type: 'diagnostics.get' });
-  assert.equal(report.storage.integrity, 'ok'); assert.equal(report.storage.schemaVersion, 6); assert.equal(report.counts.openRequests, 1); assert.equal(report.recentErrors[0].code, 'PROVIDER_ERROR');
+  assert.equal(report.storage.integrity, 'ok'); assert.equal(report.storage.schemaVersion, 7); assert.equal(report.counts.openRequests, 1); assert.equal(report.recentErrors[0].code, 'PROVIDER_ERROR');
   const serialized = JSON.stringify(report); assert.doesNotMatch(serialized, /Private|private-repo|DB_PASSWORD|do-not-export|hidden|transcript|\/Users\//);
   const exported = h.call<StoredExport>({ type: 'diagnostics.export' });
   const bytes = readFileSync(exported.path); assert.equal(createHash('sha256').update(bytes).digest('hex'), exported.sha256);
@@ -91,7 +91,7 @@ test('migration 6 preserves pre-existing requests and task request versions acro
   const h = setup(t); const request = h.create(); h.call({ type: 'task.createFromRequest', requestId: request.id });
   // Reconstruct the exact pre-migration shape in a separate fixture, preserving historical tables.
   const path = join(h.directory, 'legacy.db'); h.store.db.exec(`VACUUM INTO '${path.replaceAll("'", "''")}'`);
-  const legacy = new Database(path); legacy.exec('DROP TRIGGER immutable_request_revision_update;DROP TRIGGER immutable_request_revision_delete;DROP TABLE request_revisions;DELETE FROM schema_migrations WHERE version=6'); legacy.close();
+  const legacy = new Database(path); legacy.exec('DROP TRIGGER immutable_request_revision_update;DROP TRIGGER immutable_request_revision_delete;DROP TABLE request_revisions;DROP TABLE initialization_runs;ALTER TABLE agent_runs DROP COLUMN implementation_started;DELETE FROM schema_migrations WHERE version>=6'); legacy.close();
   const migrated = new Store(path); const snapshot = migrated.snapshot();
   assert.equal(snapshot.requestRevisions.length, 1); assert.equal(migrated.requestForTask(snapshot.tasks[0]).title, 'Private feature title');
   assert.equal(migrated.db.pragma('foreign_key_check').length, 0); migrated.close();

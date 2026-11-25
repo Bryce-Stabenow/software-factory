@@ -18,6 +18,7 @@
     "typecheck": "tsc -p tsconfig.service.json --noEmit && vue-tsc -p apps/desktop/tsconfig.json --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:codex": "node --import tsx scripts/smoke-codex.ts",
+    "test:initialization": "node --import tsx scripts/smoke-initialization.ts",
     "test:implementation": "node --import tsx scripts/smoke-build.ts",
     "service": "node dist/apps/factory-service/src/main.js",
     "prepare:desktop": "node scripts/prepare-desktop.mjs",

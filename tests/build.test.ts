@@ -457,3 +457,112 @@ test('missing validation tools block for setup without consuming repair attempts
   assert.equal(snapshot.runs.filter(run => run.stage === 'repair').length, 0);
   assert.equal(h.implementationCalls, 1);
 });
+
+// Repository-backed execution fixtures use the same planner/implementation/review gates.
+async function configureYaml(h: Awaited<ReturnType<typeof setup>>, options: { network?: boolean; allowNetwork?: boolean; commit?: boolean; commands?: { name: string; run: string[]; timeout_seconds: number }[] } = {}) {
+  const project = h.snapshot().projects[0];
+  h.call({ type: 'project.configuration.save', projectId: project.id, expectedVersion: project.version, expectedDigest: null,
+    configuration: { version: 1, worktree_init: { network: options.network ?? false, commands: options.commands ?? [{ name: 'Prepare dependencies', run: [process.execPath, '-e', "require('fs').mkdirSync('node_modules',{recursive:true});require('fs').writeFileSync('node_modules/ready','ready')"], timeout_seconds: 2 }] }, verification: { commands: [{ name: check.name, run: check.argv, timeout_seconds: 2 }] } },
+    local: { executionEnabled: true, trustedRepository: true, initializationNetworkAllowed: options.allowNetwork ?? false } });
+  // Dependency output must stay ignored in each worktree.
+  writeFileSync(join(h.repo, '.gitignore'), 'node_modules/\n');
+  if (options.commit !== false) { git(h.repo, ['add', '.kulumin.yml', '.gitignore']); git(h.repo, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'Shared setup']); }
+}
+test('YAML initializes every new worktree before implementation and verifies afterward; retries reuse successful setup', async t => {
+  const calls: { name: string; network: boolean }[] = [], runner = new FixtureValidator();
+  const h = await setup(t, { validator: { async run(input) { calls.push({ name: input.command.name, network: input.networkAccess === true }); return runner.run(input); } } });
+  await configureYaml(h, { network: true, allowNetwork: true });
+  h.approve(await h.makeTask()); await h.service.builds.idle();
+  let snapshot = h.snapshot();
+  assert.equal(snapshot.tasks[0].status, 'FINAL_REVIEW', snapshot.tasks[0].reason ?? '');
+  assert.deepEqual(calls, [{ name: 'Prepare dependencies', network: true }, { name: 'Tests', network: false }]);
+  assert.equal(snapshot.initializations[0].status, 'succeeded');
+  assert.equal(readFileSync(join(snapshot.workspaces[0].path, 'node_modules/ready'), 'utf8'), 'ready');
+  assert.ok(JSON.parse(snapshot.evidence[0].body_json).initialization);
+  // Stop at an explicit recovery gate and verify setup is not repeated automatically.
+  h.service.builds.invalidate(snapshot.tasks[0], 'Fixture needs revalidation');
+  h.resume(h.snapshot().tasks[0], 'validate'); await h.service.builds.idle();
+  assert.equal(h.snapshot().initializations.length, 1);
+  h.approve(await h.makeTask('Second worktree')); await h.service.builds.idle();
+  assert.equal(h.snapshot().initializations.length, 2);
+  assert.equal(calls.filter(call => call.name === 'Prepare dependencies').length, 2);
+  snapshot = h.snapshot(); assert.ok(snapshot.tasks.every(task => task.status === 'FINAL_REVIEW'));
+});
+test('initialization failure blocks before implementation without consuming repair budget, then retries on resume', async t => {
+  let fail = true;
+  const runner = new FixtureValidator();
+  const h = await setup(t, { validator: { async run(input) { if (input.command.name === 'Prepare dependencies' && fail) { input.onOutput('setup failed'); return { exitCode: 7, log: 'setup failed' }; } return runner.run(input); } } });
+  await configureYaml(h); h.approve(await h.makeTask()); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'BLOCKED'); assert.equal(h.implementationCalls, 0);
+  assert.equal(h.snapshot().initializations[0].status, 'failed'); assert.equal(h.snapshot().validations.length, 0);
+  assert.equal(h.snapshot().runs.filter(run => run.stage === 'repair').length, 0);
+  fail = false; h.resume(h.snapshot().tasks[0], 'implement'); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'FINAL_REVIEW', h.snapshot().tasks[0].reason ?? ''); assert.equal(h.snapshot().initializations.length, 2); assert.equal(h.implementationCalls, 1);
+});
+test('initialization cancellation preserves logs and worktree and resumes explicitly', async t => {
+  let hang = true, started = false;
+  const runner = new FixtureValidator();
+  const h = await setup(t, { validator: { async run(input) {
+    if (input.command.name === 'Prepare dependencies' && hang) { started = true; input.onOutput('partial initialization\nAPI_TOKEN=secret-value\n'); await new Promise<void>((_resolve, reject) => input.signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true })); }
+    return runner.run(input);
+  } } });
+  await configureYaml(h); h.approve(await h.makeTask()); await waitFor(() => started);
+  const task = h.snapshot().tasks[0]; h.call({ type: 'task.cancel', taskId: task.id, expectedVersion: task.version, reason: 'Stop setup' }); await h.service.builds.idle();
+  assert.equal(h.snapshot().initializations[0].status, 'cancelled'); assert.match(h.snapshot().initializations[0].log_text, /partial initialization/); assert.doesNotMatch(h.snapshot().initializations[0].log_text, /secret-value/); assert.equal(h.implementationCalls, 0);
+  hang = false; h.resume(h.snapshot().tasks[0], 'implement'); await h.service.builds.idle(); assert.equal(h.snapshot().tasks[0].status, 'FINAL_REVIEW');
+});
+test('initialization source edits are preserved and block implementation', async t => {
+  const h = await setup(t);
+  await configureYaml(h, { commands: [{ name: 'Mutate', run: [process.execPath, '-e', "require('fs').writeFileSync('greeting.cjs','// hook source edit')"], timeout_seconds: 2 }] });
+  h.approve(await h.makeTask()); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'BLOCKED'); assert.match(h.snapshot().tasks[0].reason!, /changed source/); assert.equal(h.implementationCalls, 0); assert.match(readFileSync(join(h.snapshot().workspaces[0].path, 'greeting.cjs'), 'utf8'), /hook source edit/);
+});
+test('uncommitted YAML and missing local initialization network permission cannot create a worktree', async t => {
+  const h = await setup(t); await configureYaml(h, { network: true, allowNetwork: false });
+  const task = await h.makeTask(), plan = h.snapshot().plans.find(plan => plan.task_id === task.id)!;
+  const result = h.service.dispatch({ type: 'task.reviewPlan', taskId: task.id, expectedVersion: task.version, revisionId: plan.id, digest: plan.sha256_digest, action: 'approve' });
+  assert.equal(result.ok, false); if (!result.ok) assert.match(result.error.message, /Allow it locally/);
+  assert.equal(h.snapshot().workspaces.length, 0); assert.equal(h.implementationCalls, 0);
+});
+test('explicit initialize recovery reruns setup then validates without another implementation', async t => {
+  const h = await setup(t); await configureYaml(h); h.approve(await h.makeTask()); await h.service.builds.idle();
+  h.service.builds.invalidate(h.snapshot().tasks[0], 'Dependencies removed');
+  const task = h.snapshot().tasks[0], details = h.call<WorkspaceDetails>({ type: 'workspace.inspect', taskId: task.id });
+  h.call({ type: 'task.resume', taskId: task.id, expectedVersion: task.version, stage: 'initialize', expectedHead: details.currentHead, expectedWorkspaceDigest: details.workspaceDigest }); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'FINAL_REVIEW', h.snapshot().tasks[0].reason ?? ''); assert.equal(h.snapshot().initializations.length, 2); assert.equal(h.implementationCalls, 1);
+});
+test('uncommitted YAML blocks approval dispatch before creating a worktree', async t => {
+  const h = await setup(t); await configureYaml(h, { commit: false });
+  const task = await h.makeTask(), plan = h.snapshot().plans.find(plan => plan.task_id === task.id)!;
+  const result = h.service.dispatch({ type: 'task.reviewPlan', taskId: task.id, expectedVersion: task.version, revisionId: plan.id, digest: plan.sha256_digest, action: 'approve' });
+  assert.equal(result.ok, false); if (!result.ok) assert.match(result.error.message, /Commit/);
+  assert.equal(h.snapshot().workspaces.length, 0); assert.equal(h.snapshot().tasks[0].approved_plan_revision_id, null);
+});
+test('restart interrupts initialization and retries it without assuming success', async t => {
+  const h = await setup(t); await configureYaml(h); h.approve(await h.makeTask()); await h.service.builds.idle();
+  const task = h.snapshot().tasks[0], initialization = h.snapshot().initializations[0];
+  h.store.db.prepare("UPDATE tasks SET status='BUILDING' WHERE id=?").run(task.id);
+  h.store.db.prepare("UPDATE initialization_runs SET status='running',finished_at=NULL WHERE id=?").run(initialization.id);
+  h.store.db.prepare("UPDATE agent_runs SET status='running',finished_at=NULL WHERE id=?").run(initialization.run_id);
+  await h.restart();
+  assert.equal(h.snapshot().tasks[0].status, 'BLOCKED'); assert.equal(h.snapshot().initializations[0].status, 'interrupted');
+  h.resume(h.snapshot().tasks[0], 'validate'); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'FINAL_REVIEW', h.snapshot().tasks[0].reason ?? ''); assert.equal(h.snapshot().initializations[1].status, 'succeeded'); assert.equal(h.implementationCalls, 1);
+});
+test('changed worktree YAML cannot weaken verification or authorize final acceptance', async t => {
+  const h = await setup(t); await configureYaml(h); h.approve(await h.makeTask()); await h.service.builds.idle();
+  const workspace = h.snapshot().workspaces[0];
+  writeFileSync(join(workspace.path, '.kulumin.yml'), 'version: 1\nworktree_init: {commands: []}\nverification: {commands: []}\n');
+  assert.equal(h.service.dispatch(finalCommand(h)).ok, false);
+  assert.equal(h.snapshot().tasks[0].status, 'BLOCKED'); assert.equal(h.snapshot().tasks[0].accepted_commit_sha, null);
+});
+test('repeated setup failures do not exhaust implementation attempts', async t => {
+  let ready = false;
+  const runner = new FixtureValidator();
+  const h = await setup(t, { validator: { async run(input) { return !ready && input.command.name === 'Prepare dependencies' ? { exitCode: 1, log: 'Dependencies unavailable' } : runner.run(input); } } });
+  await configureYaml(h); h.approve(await h.makeTask()); await h.service.builds.idle();
+  for (let attempt = 0; attempt < 3; attempt++) { h.resume(h.snapshot().tasks[0], 'implement'); await h.service.builds.idle(); }
+  assert.equal(h.implementationCalls, 0); assert.equal(h.snapshot().initializations.length, 4);
+  ready = true; h.resume(h.snapshot().tasks[0], 'implement'); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'FINAL_REVIEW', h.snapshot().tasks[0].reason ?? ''); assert.equal(h.implementationCalls, 1);
+});

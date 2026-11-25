@@ -8,6 +8,7 @@ import { redact } from '../agents/snapshot.js';
 
 export interface ValidationInput {
   cwd: string; temporaryDirectory: string; command: ExecutionConfig['validationCommands'][number];
+  networkAccess?: boolean;
   processId: string; signal: AbortSignal; onProcess: (pid: number) => void; onOutput: (log: string) => void;
 }
 export interface ValidationAdapter { run(input: ValidationInput): Promise<{ exitCode: number; log: string }> }
@@ -66,7 +67,7 @@ export class CodexValidationRunner implements ValidationAdapter {
       const result = await rpc.request('command/exec', {
         command: input.command.argv, cwd: input.cwd, processId: input.processId,
         timeoutMs: input.command.timeoutMs, outputBytesCap: 64000, streamStdoutStderr: true,
-        sandboxPolicy: { type: 'workspaceWrite', writableRoots: [input.cwd, input.temporaryDirectory], networkAccess: false, excludeSlashTmp: true, excludeTmpdirEnvVar: true },
+        sandboxPolicy: { type: 'workspaceWrite', writableRoots: [input.cwd, input.temporaryDirectory], networkAccess: input.networkAccess === true, excludeSlashTmp: true, excludeTmpdirEnvVar: true },
         env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, TMPDIR: input.temporaryDirectory, CI: '1', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', NPM_CONFIG_USERCONFIG: '/dev/null', NPM_CONFIG_CACHE: join(input.temporaryDirectory, 'npm-cache') },
       }, input.command.timeoutMs + 4000);
       signal.throwIfAborted();
