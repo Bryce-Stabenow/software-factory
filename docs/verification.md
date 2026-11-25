@@ -139,3 +139,21 @@ Removed the monogram and all line details. The current mark contains four solid 
 ### Approved identity applied consistently
 
 The simplified three-amber ship is now the approved identity. Replaced the unused legacy green native SVG, added the approved logo to the README, refreshed the README screenshot, and documented the canonical artwork and palette in `branding.md`. Desktop packaging now regenerates all icons automatically. The final renderer/typecheck/native build and signature verification passed; the bundled ICNS matches its generated source byte for byte. Browser verification confirmed the current sidebar mark with no warnings/errors. The preview used temporary data, was stopped afterward, and `.factory/` remains empty. Current screenshot: [approved identity](screenshots/ui-final-brand.jpg).
+
+
+## Repository folder picker — implementation verification pending
+
+Added a desktop-only Choose folder control to Connect a repository, backed by the Tauri v2 dialog plugin with `directory: true` and `multiple: false`. The selected path remains visible and editable and is submitted unchanged through the existing `project.add` flow. Browser development retains manual entry and explains desktop picker availability.
+
+Source inspection confirms separate picker activity, submission guards for blank fields and pending selection, cancellation preserving form values, retryable modal errors, and session checks that discard results after dismissal or unmount. Plugin registration and the main-window-only `dialog:allow-open` permission are present. These are source observations, not runtime test results.
+
+No commands, dependency installation, tests, builds, or native/browser interactions were run for this increment. The implementation environment permits repository file tools only; the service performs validation separately.
+
+Dependency resolution remains incomplete: JavaScript and Rust manifests pin dialog plugin 2.4.0, and package-lock.json contains a JavaScript package entry without a registry-verified integrity hash. Package availability and metadata have not been verified. Cargo.lock is unchanged because the plugin and its transitive dependencies require Cargo resolution; no checksums or transitive dependency graph were invented. The locked/offline Rust build is blocked until Cargo.lock is regenerated and the required crates are cached. Resolve and verify both dependency lockfiles before packaging.
+
+Pending verification:
+- Run `npm run typecheck`, `npm run build`, and `npm test`.
+- Resolve Rust dependencies, then check the updated lockfile and the locked/offline desktop packaging build.
+- In the packaged native application, choose and connect a disposable Git repository with spaces and Unicode in its path; verify the canonical stored path and persistence after restart.
+- Check cancellation, reselection, repeated clicks, dismissal and reopening during selection, dialog failure and retry, non-Git rejection, blank fields, and keyboard access.
+- Check browser manual connection and confirm no picker control or native dialog invocation is exposed.

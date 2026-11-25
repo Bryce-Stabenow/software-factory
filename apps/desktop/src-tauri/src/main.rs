@@ -104,6 +104,7 @@ fn tool_path(node: &Path) -> String {
 }
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .append_invoke_initialization_script(if std::env::var("FACTORY_NATIVE_DEBUG").as_deref() == Ok("1") { r#"const factoryConsoleError = console.error.bind(console); console.error = (...args) => { window.__TAURI_INTERNALS__.invoke('factory_webview_error', {message: args.map(arg => arg instanceof Error ? arg.stack : typeof arg === 'string' ? arg : typeof arg).join(' ')}).catch(()=>{}); factoryConsoleError(...args); }; window.addEventListener('securitypolicyviolation', event => { window.__TAURI_INTERNALS__.invoke('factory_webview_error',{message:'CSP ' + event.violatedDirective + ' ' + event.blockedURI}).catch(()=>{}); }); window.addEventListener('error', event => { window.__TAURI_INTERNALS__.invoke('factory_webview_error', {message: String(event.message || 'Resource load failed') + ' ' + (event.filename || event.target?.src || '')}).catch(()=>{}); }, true); window.addEventListener('unhandledrejection', event => { window.__TAURI_INTERNALS__.invoke('factory_webview_error', {message: String(event.reason)}).catch(()=>{}); });"# } else { "" })
         .setup(|app| {
             let packaged = !cfg!(debug_assertions);

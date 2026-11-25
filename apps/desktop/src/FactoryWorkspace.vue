@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import type { Command, DomainEvent, Plan, Request, Snapshot, Task, WorkspaceDetails } from '../../../packages/contracts/src/index';
-import { command } from './api';
+import { command, nativeDesktop, selectRepositoryFolder } from './api';
 import ProjectExecutionSettings from './ProjectExecutionSettings.vue';
 import WorkspacePanel from './WorkspacePanel.vue';
 import FinalReviewPanel from './FinalReviewPanel.vue';
@@ -48,6 +48,24 @@ const currentRun = computed(() => data.value?.runs.filter(run => run.task_id ===
 const openQuestions = computed(() => data.value?.questions.filter(question => question.task_id === selectedId.value && question.plan_revision_id === selected.value?.current_plan_revision_id && question.status === 'open') ?? []);
 const form = ref({ projectId: '', title: '', body: '', kind: 'feature' as Request['type'], priority: 'normal', criteria: '' });
 const projectForm = ref({ name: '', path: '' });
+const pickingFolder = ref(false);
+const pickerError = ref('');
+let projectDialogSession = 0;
+watch(showProject, () => { projectDialogSession++; pickerError.value = ''; }, { flush: 'sync' });
+async function chooseRepositoryFolder() {
+  if (!nativeDesktop || !showProject.value || pickingFolder.value || busy.value) return;
+  const session = projectDialogSession;
+  pickingFolder.value = true;
+  pickerError.value = '';
+  try {
+    const path = await selectRepositoryFolder();
+    if (showProject.value && session === projectDialogSession && path !== null) projectForm.value.path = path;
+  } catch (cause) {
+    if (showProject.value && session === projectDialogSession) pickerError.value = String(cause instanceof Error ? cause.message : cause);
+  } finally {
+    pickingFolder.value = false;
+  }
+}
 const statusLabel = (status: string) => status.toLowerCase().split('_').map(word => word[0].toUpperCase() + word.slice(1)).join(' ');
 const projectName = (id: string) => data.value?.projects.find(project => project.id === id)?.name ?? 'Unknown project';
 const matches = (item: { id: string; title: string; project_id: string }) => `${item.title} ${item.id} ${issueId(item.id)} REQ-${item.id.slice(0,5)}`.toLowerCase().includes(query.value.toLowerCase()) && (!projectFilter.value || projectFilter.value === item.project_id);
@@ -142,7 +160,7 @@ onMounted(async () => {
     catch { connected.value = false; }
   }, 2000);
 });
-onUnmounted(() => { clearInterval(timer); window.removeEventListener('keydown', handleKeydown); });
+onUnmounted(() => { projectDialogSession++; clearInterval(timer); window.removeEventListener('keydown', handleKeydown); });
 
 watch(detailTab, async () => { await nextTick(); document.querySelector('.issue-detail-scroll')?.scrollTo({ top: 0 }); });
 const taskOpen = computed({ get: () => !!selectedId.value, set: value => { if (!value) selectedId.value = null; } });
@@ -193,7 +211,7 @@ async function saveAndCreateTask() {
   const result = await act({ type: 'task.createFromRequest', requestId: original.id }) as Task | undefined;
   if (result) { showCreate.value = false; openTask(result); }
 }
-async function registerProject() { const result = await act({ type: 'project.add', path: projectForm.value.path, name: projectForm.value.name }); if (result) { showProject.value = false; projectForm.value = { name: '', path: '' }; toast.add({ title: 'Repository connected', icon: 'i-lucide-folder-check', color: 'success' }); } }
+async function registerProject() { if (!showProject.value || busy.value || pickingFolder.value || !projectForm.value.name.trim() || !projectForm.value.path.trim()) return; pickerError.value = ''; const result = await act({ type: 'project.add', path: projectForm.value.path, name: projectForm.value.name }); if (result) { showProject.value = false; projectForm.value = { name: '', path: '' }; toast.add({ title: 'Repository connected', icon: 'i-lucide-folder-check', color: 'success' }); } }
 function handleKeydown(event: KeyboardEvent) {
   const modifier = event.metaKey || event.ctrlKey;
   if (modifier && event.key.toLowerCase() === 'k') { event.preventDefault(); showCommand.value = !showCommand.value; return; }
@@ -261,7 +279,7 @@ function handleKeydown(event: KeyboardEvent) {
     <template #footer><span class="dialog-keyboard-hint"><UKbd value="meta" /><UKbd>↵</UKbd> to save</span><UButton color="neutral" variant="ghost" @click="showCreate = false">Cancel</UButton><UButton v-if="editingRequest && !taskFor(editingRequest.id) && editingRequest.status !== 'archived'" color="neutral" variant="outline" :disabled="busy || !form.title.trim() || !form.body.trim()" @click="saveAndCreateTask">Create task</UButton><UButton type="submit" form="request-form" :loading="busy" :disabled="!form.projectId || !form.title.trim() || !form.body.trim() || editingRequest?.status === 'archived'">{{ editingRequest ? 'Save changes' : 'Create request' }}</UButton></template>
   </UModal>
 
-  <UModal v-model:open="showProject" title="Connect a repository" description="Choose an existing local Git repository." :ui="{ content: 'project-dialog', header: 'dialog-header', body: 'dialog-body', footer: 'dialog-footer' }"><template #body><form id="project-form" class="request-form" @submit.prevent="registerProject"><UAlert v-if="error" color="error" variant="soft" :description="error" /><UFormField label="Project name" required><UInput v-model="projectForm.name" required maxlength="120" placeholder="My project" class="w-full" /></UFormField><UFormField label="Repository path" required><UInput v-model="projectForm.path" required placeholder="/Users/you/projects/my-project" icon="i-lucide-folder-git-2" class="w-full" /></UFormField><p class="field-note">The main checkout stays untouched. Execution starts disabled; enable it explicitly for trusted repositories.</p></form></template><template #footer><UButton color="neutral" variant="ghost" @click="showProject = false">Cancel</UButton><UButton type="submit" form="project-form" :loading="busy" :disabled="!projectForm.name.trim() || !projectForm.path.trim()">Connect repository</UButton></template></UModal>
+  <UModal v-model:open="showProject" title="Connect a repository" description="Choose an existing local Git repository." :ui="{ content: 'project-dialog', header: 'dialog-header', body: 'dialog-body', footer: 'dialog-footer' }"><template #body><form id="project-form" class="request-form" @submit.prevent="registerProject"><UAlert v-if="error" color="error" variant="soft" :description="error" /><UFormField label="Project name" required><UInput v-model="projectForm.name" required maxlength="120" placeholder="My project" class="w-full" /></UFormField><UFormField label="Repository path" required><div class="flex items-center gap-2"><UInput v-model="projectForm.path" required :disabled="pickingFolder" placeholder="/Users/you/projects/my-project" icon="i-lucide-folder-git-2" class="min-w-0 flex-1" /><UButton v-if="nativeDesktop" type="button" color="neutral" variant="outline" icon="i-lucide-folder-open" :loading="pickingFolder" :disabled="busy || pickingFolder" @click="chooseRepositoryFolder">Choose folder</UButton></div></UFormField><p v-if="!nativeDesktop" class="field-note">Enter the repository’s full local path. Choose folder is available in the desktop app.</p><UAlert v-if="pickerError" color="error" variant="soft" :description="pickerError" role="alert" /><p class="field-note">The main checkout stays untouched. Execution starts disabled; enable it explicitly for trusted repositories.</p></form></template><template #footer><UButton color="neutral" variant="ghost" @click="showProject = false">Cancel</UButton><UButton type="submit" form="project-form" :loading="busy" :disabled="busy || pickingFolder || !projectForm.name.trim() || !projectForm.path.trim()">Connect repository</UButton></template></UModal>
 
   <UModal v-model:open="showCommand" title="Search workspace" description="Find issues, requests, and actions." :ui="{ content: 'command-dialog' }"><template #content><UCommandPalette :groups="commandGroups" placeholder="Search issues, requests, and actions…" :close="{ onClick: () => { showCommand = false; } }" class="command-palette" /></template></UModal>
   <UModal v-model:open="showShortcuts" title="Keyboard shortcuts" description="A faster way to move through your workspace." :ui="{ content: 'shortcuts-dialog', header: 'dialog-header', body: 'dialog-body' }"><template #body><div class="shortcut-row"><span>Command menu</span><span><UKbd value="meta" /><UKbd>K</UKbd></span></div><div class="shortcut-row"><span>New request</span><UKbd>C</UKbd></div><div class="shortcut-row"><span>New request, anywhere</span><span><UKbd value="meta" /><UKbd>N</UKbd></span></div><div class="shortcut-row"><span>Navigate issue list</span><span><UKbd>J</UKbd><UKbd>K</UKbd></span></div><div class="shortcut-row"><span>Open focused issue</span><UKbd>↵</UKbd></div><div class="shortcut-row"><span>Close dialog</span><UKbd>Esc</UKbd></div><div class="shortcut-row"><span>Show shortcuts</span><UKbd>?</UKbd></div></template></UModal>
