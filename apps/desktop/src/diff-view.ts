@@ -28,7 +28,7 @@ function sectionFrom(raw: string[], fallback: string): DiffSection {
 }
 export function parseDiff(diff: string, changedFiles: string[] = []): DiffSection[] {
   const chunks = (diff || '').split(/(?=^diff --git )/m).filter(chunk => chunk.startsWith('diff --git '));
-  const sections = chunks.map((chunk, index) => sectionFrom(chunk.replace(/\n$/, '').split('\n'), changedFiles[index] ?? \`Unknown file \${index + 1}\`));
+  const sections = chunks.map((chunk, index) => sectionFrom(chunk.replace(/\n$/, '').split('\n'), changedFiles[index] ?? `Unknown file ${index + 1}`));
   for (const path of changedFiles) if (!sections.some(section => section.path === path || section.oldPath === path || section.newPath === path)) sections.push({ path, oldPath: null, newPath: null, lines: [], binary: false, unavailable: true });
   return sections;
 }
