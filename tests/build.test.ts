@@ -46,7 +46,7 @@ async function setup(t: { after: (fn: () => unknown) => void }, options: { hang?
     implementationCalls++;
     const tools = new WorkspaceFiles(input.cwd, input.guard);
     const before = JSON.parse(tools.call('read_repository_file', { path: 'greeting.cjs' }));
-    tools.call('write_repository_file', { path: 'greeting.cjs', content: options.hang ? '// preserved partial implementation\n' : implemented, expectedDigest: before.digest });
+    tools.call('write_repository_file', { path: 'greeting.cjs', content: options.hang ? '// preserved partial implementation\n' : implemented + (implementationCalls > 1 ? `// repair attempt ${implementationCalls - 1}\n` : ''), expectedDigest: before.digest });
     input.onEvent({ type: 'progress', message: 'Fixture wrote greeting.cjs in its task worktree.' });
     if (options.hang) await new Promise<void>((_resolve, reject) => { if (input.signal.aborted) reject(new Error('cancelled')); else input.signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }); });
     return { summary: 'Added the optional formal greeting', limitations: [], touchedPaths: tools.touched() };
@@ -313,6 +313,46 @@ test('evidence verification detects altered checks and captured logs', async t =
   h.store.db.prepare("UPDATE validation_runs SET log_text='replaced evidence' WHERE status='passed'").run();
   assert.equal(h.service.dispatch(finalCommand(h)).ok, false); assert.equal(h.snapshot().tasks[0].status, 'BLOCKED');
 });
+for (const kind of ['no writes', 'identical write', 'reverted write'] as const) {
+  test(`empty implementation blocks before validation and review: ${kind}`, async t => {
+    const implementer: ImplementationAdapter = { async implement(input) {
+      const tools = new WorkspaceFiles(input.cwd, input.guard);
+      const before = JSON.parse(tools.call('read_repository_file', { path: 'greeting.cjs' }));
+      if (kind === 'reverted write') tools.call('write_repository_file', { path: 'greeting.cjs', content: implemented, expectedDigest: before.digest });
+      if (kind !== 'no writes') {
+        const current = JSON.parse(tools.call('read_repository_file', { path: 'greeting.cjs' }));
+        tools.call('write_repository_file', { path: 'greeting.cjs', content: before.content, expectedDigest: current.digest });
+      }
+      return { summary: 'No implementation could be applied', limitations: ['Provider reported a write restriction'], touchedPaths: tools.touched() };
+    } };
+    const h = await setup(t, { implementer }); h.approve(await h.makeTask()); await h.service.builds.idle();
+    const snapshot = h.snapshot(), run = snapshot.runs.find(run => run.stage === 'implement')!;
+    assert.equal(snapshot.tasks[0].status, 'BLOCKED'); assert.match(snapshot.tasks[0].reason!, /produced no code changes/);
+    assert.equal(run.status, 'failed'); assert.equal(run.error_code, 'INVALID_IMPLEMENTATION'); assert.match(run.summary!, /write restriction/);
+    assert.equal(snapshot.workspaces[0].head_sha, snapshot.workspaces[0].base_sha);
+    assert.equal(snapshot.validations.length, 0); assert.equal(snapshot.reviews.length, 0); assert.equal(snapshot.evidence.length, 0);
+    assert.equal(snapshot.runs.filter(run => run.stage === 'repair').length, 0);
+    assert.ok(!snapshot.events.some(event => event.type === 'implementation.completed'));
+  });
+}
+test('an empty repair fails without validating unchanged code again', async t => {
+  let calls = 0;
+  const implementer: ImplementationAdapter = { async implement(input) {
+    const tools = new WorkspaceFiles(input.cwd, input.guard);
+    if (++calls === 1) {
+      const before = JSON.parse(tools.call('read_repository_file', { path: 'greeting.cjs' }));
+      tools.call('write_repository_file', { path: 'greeting.cjs', content: implemented, expectedDigest: before.digest });
+    }
+    return { summary: calls === 1 ? 'Implemented' : 'Unable to repair', limitations: [], touchedPaths: tools.touched() };
+  } };
+  const reviewer: ReviewAdapter = { async review(input) { return { commitSha: input.commitSha, verdict: 'changes_requested', summary: 'Still defective', findings: [finding] }; } };
+  const h = await setup(t, { implementer, reviewer }); h.approve(await h.makeTask()); await h.service.builds.idle();
+  const snapshot = h.snapshot();
+  assert.equal(snapshot.tasks[0].status, 'BLOCKED'); assert.match(snapshot.tasks[0].reason!, /Repair produced no code changes/);
+  assert.equal(snapshot.validations.length, 1); assert.equal(snapshot.reviews.length, 1); assert.equal(snapshot.evidence.length, 0);
+  const repairs = snapshot.runs.filter(run => run.stage === 'repair');
+  assert.equal(repairs.length, 1); assert.equal(repairs[0].status, 'failed'); assert.equal(repairs[0].error_code, 'INVALID_IMPLEMENTATION');
+});
 test('review changes trigger repair, a new commit, fresh checks, and fresh independent review', async t => {
   let reviews = 0, writes = 0;
   const reviewer: ReviewAdapter = { async review(input) {
@@ -348,6 +388,21 @@ test('persistent review defects exhaust exactly three repairs and remain blocked
   assert.equal(h.snapshot().runs.filter(run => run.stage === 'repair').length, 3); assert.equal(h.snapshot().reviews.length, 4); assert.equal(h.snapshot().evidence.length, 0);
   await h.restart(); h.resume(h.snapshot().tasks[0], 'validate'); await h.service.builds.idle();
   assert.equal(h.snapshot().tasks[0].status, 'BLOCKED'); assert.equal(h.snapshot().runs.filter(run => run.stage === 'repair').length, 3);
+});
+test('failed empty runs do not exhaust the budget for actual code repairs after explicit recovery', async t => {
+  let reviews = 0;
+  const reviewer: ReviewAdapter = { async review(input) {
+    if (++reviews === 1) return { commitSha: input.commitSha, verdict: 'changes_requested', summary: 'Needs correction', findings: [finding] };
+    return passedReview.review(input);
+  } };
+  const h = await setup(t, { reviewer }), task = await h.makeTask();
+  const plan = h.snapshot().plans.find(plan => plan.task_id === task.id)!;
+  for (let index = 0; index < 3; index++) h.store.db.prepare("INSERT INTO agent_runs(id,task_id,stage,provider,status,attempt,started_at,approved_plan_id,error_code) VALUES (?,?,'repair','codex','failed',?, ?,?,'INVALID_IMPLEMENTATION')").run(randomUUID(), task.id, index + 1, new Date().toISOString(), plan.id);
+  h.approve(task); await h.service.builds.idle();
+  const snapshot = h.snapshot();
+  assert.equal(snapshot.tasks[0].status, 'FINAL_REVIEW', snapshot.tasks[0].reason ?? '');
+  assert.equal(snapshot.runs.filter(run => run.stage === 'repair' && run.status === 'succeeded').length, 1);
+  assert.equal(snapshot.runs.filter(run => run.stage === 'repair' && run.error_code === 'INVALID_IMPLEMENTATION').length, 3);
 });
 test('blocked reviews and contradictory critical pass verdicts cannot reach final review', async t => {
   const reviewer: ReviewAdapter = { async review(input) { return { commitSha: input.commitSha, verdict: 'pass', summary: 'Contradictory verdict', findings: [{ ...finding, severity: 'critical' }] }; } };

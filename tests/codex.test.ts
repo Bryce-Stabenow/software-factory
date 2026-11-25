@@ -4,13 +4,31 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { CodexReviewer, CodexPlanner } from '../apps/factory-service/src/agents/codex.js';
+import { CodexImplementer, CodexReviewer, CodexPlanner } from '../apps/factory-service/src/agents/codex.js';
 import { createPlanningSnapshot, SnapshotReader, snapshotDigest } from '../apps/factory-service/src/agents/snapshot.js';
 import { Store } from '../apps/factory-service/src/persistence/store.js';
 import { FactoryService } from '../apps/factory-service/src/service.js';
 import type { Command, Snapshot, Task } from '../packages/contracts/src/index.js';
 
 const fixture = resolve('tests/fixtures/codex-server.mjs');
+for (const mode of ['success', 'implicit-cwd', 'unsafe', 'unsafe-network', 'unsafe-roots', 'unsafe-tmp'] as const) {
+  test(`implementer writes only with a confirmed task-worktree sandbox: ${mode}`, async t => {
+    const directory = mkdtempSync(join(tmpdir(), 'factory-implementer-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    execFileSync('git', ['init', '-b', 'main', directory], { stdio: 'ignore' });
+    const path = join(directory, 'greeting.ts'), original = 'export const greet = (name: string) => name;\n';
+    writeFileSync(path, original);
+    const implementer = new CodexImplementer(process.execPath, [fixture, mode], 2000);
+    const run = implementer.implement({ cwd: directory, guard() {}, prompt: 'Implement the greeting', signal: new AbortController().signal, onEvent() {} });
+    if (mode === 'success' || mode === 'implicit-cwd') {
+      assert.deepEqual((await run).touchedPaths, ['greeting.ts']);
+      assert.match(readFileSync(path, 'utf8'), /Hello/);
+    } else {
+      await assert.rejects(run, error => (error as { code: string }).code === 'POLICY_DENIED');
+      assert.equal(readFileSync(path, 'utf8'), original);
+    }
+  });
+}
 function setup(t: { after: (fn: () => unknown) => void }, mode = 'success', timeout = 2000) {
   const directory = mkdtempSync(join(tmpdir(), 'factory-codex-test-'));
   const repo = join(directory, 'repo');

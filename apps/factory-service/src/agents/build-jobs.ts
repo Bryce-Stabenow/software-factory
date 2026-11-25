@@ -221,7 +221,7 @@ export class BuildJobs {
     this.store.event('initialization.completed', task.project_id, task.id, { initializationId: id, status: 'succeeded' });
   }
   private assertRepairBudget(task: Task) {
-    const count = this.store.db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE task_id=? AND stage='repair' AND approved_plan_id=?").get(task.id, task.approved_plan_revision_id) as { n: number };
+    const count = this.store.db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE task_id=? AND stage='repair' AND approved_plan_id=? AND (error_code IS NULL OR error_code!='INVALID_IMPLEMENTATION')").get(task.id, task.approved_plan_revision_id) as { n: number };
     if (count.n >= 3) fail('POLICY_DENIED', 'The three-repair limit for this approved plan is exhausted. Inspect findings and logs; revise the request in a new task if more work is needed.');
   }
   private finishRun(job: BuildJob, status = 'succeeded', message?: string) {
@@ -262,9 +262,13 @@ Defects and human feedback: ${JSON.stringify(failures ?? null)}`),
     });
     const result = { ...implementationSchema.parse(JSON.parse(redact(JSON.stringify(output)))), touchedPaths: output.touchedPaths };
     this.guard(job, status);
+    this.store.db.prepare('UPDATE agent_runs SET summary=? WHERE id=?').run(redact(JSON.stringify({ summary: result.summary, limitations: result.limitations })), job.id);
+    const previousHead = this.workspaces.head(workspace);
     const head = await this.workspaces.commit(task, workspace, result.touchedPaths, job.controller.signal, pid => this.event(job, { type: 'process', pid }));
     this.guard(job, status);
-    this.store.db.prepare('UPDATE agent_runs SET summary=? WHERE id=?').run(redact(JSON.stringify({ summary: result.summary, limitations: result.limitations })), job.id);
+    if (head === previousHead || !this.workspaces.inspect(task).changedFiles.length) {
+      throw new CodexError('INVALID_IMPLEMENTATION', `${repair ? 'Repair' : 'Implementation'} produced no code changes. This attempt failed and will not proceed to validation or review. Inspect the implementation summary and limitations, then explicitly resume implementation.`);
+    }
     this.store.event(repair ? 'repair.completed' : 'implementation.completed', task.project_id, task.id, { runId: job.id, commitSha: head, summary: result.summary, limitations: result.limitations });
   }
   private async review(job: BuildJob) {
