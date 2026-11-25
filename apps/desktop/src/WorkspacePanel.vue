@@ -1,0 +1,24 @@
+<script setup lang="ts">
+import type { ValidationRun, Workspace, WorkspaceDetails } from '../../../packages/contracts/src/index';
+import StatusBadge from './StatusBadge.vue';
+import DiffViewer from './DiffViewer.vue';
+defineProps<{ workspace: Workspace; details: WorkspaceDetails | null; checks: ValidationRun[]; status: string; busy: boolean; error: string }>();
+const emit = defineEmits<{ inspect: []; open: []; resume: [stage: 'implement' | 'validate' | 'review']; copy: [text: string] }>();
+</script>
+<template>
+  <section class="workspace-panel">
+    <div class="evidence-block"><div class="evidence-block-header"><UIcon name="i-lucide-git-branch" /><h3>Isolated worktree</h3><UBadge color="neutral" variant="subtle" size="xs">Local branch</UBadge></div><div class="evidence-block-body">
+      <p class="path-text">{{ workspace.path }}</p><dl class="artifact-facts"><dt>Branch</dt><dd><code>{{ workspace.branch }}</code></dd><dt>Base</dt><dd><code>{{ workspace.base_sha }}</code></dd><dt>HEAD</dt><dd><code>{{ details?.currentHead ?? workspace.head_sha ?? 'Preparing…' }}</code></dd></dl>
+      <div class="action-row" style="margin-top:18px"><UButton color="neutral" variant="outline" size="sm" icon="i-lucide-folder-open" @click="emit('open')">Open worktree</UButton><UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-copy" @click="emit('copy', workspace.branch)">Copy branch</UButton><UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-refresh-cw" :disabled="busy" @click="emit('inspect')">Refresh</UButton></div>
+    </div></div>
+    <UAlert v-if="error" color="error" variant="subtle" :description="error" class="mb-4" />
+    <template v-if="details">
+      <p class="field-note mb-4"><UIcon :name="details.dirty ? 'i-lucide-circle-dashed' : 'i-lucide-check'" /> {{ details.dirty ? 'Uncommitted changes are preserved in this worktree.' : 'The worktree is clean and committed.' }}</p>
+      <div v-if="['BLOCKED','FAILED','CANCELLED'].includes(status)" class="next-step-card mb-5"><h3>Recover preserved work</h3><p>Continue from the exact HEAD and contents shown by the last inspection. Existing edits stay in the worktree.</p><div class="action-row"><UButton size="sm" :disabled="busy" @click="emit('resume','implement')">Resume implementation</UButton><UButton color="neutral" variant="outline" size="sm" :disabled="busy || details.dirty" @click="emit('resume','validate')">Revalidate &amp; review</UButton></div></div>
+      <UCollapsible class="evidence-disclosure"><UButton color="neutral" variant="ghost" trailing-icon="i-lucide-chevron-down" class="disclosure-trigger">Changed files <span>{{ details.changedFiles.length }}</span></UButton><template #content><div class="file-list"><span v-for="file in details.changedFiles" :key="file"><UIcon name="i-lucide-file-code" />{{ file }}</span></div><p v-if="details.truncated" class="field-note p-3">Diff capture is truncated. Open the worktree for the full changes.</p><DiffViewer :diff="details.diff" /></template></UCollapsible>
+    </template>
+    <div class="section-title mt-7"><h3>Validation evidence</h3><span class="section-caption">{{ checks.length }} checks</span></div>
+    <div v-if="!checks.length" class="compact-empty surface"><UIcon name="i-lucide-list-checks" /><div><strong>Checks not run</strong><p>{{ status === 'BUILDING' ? 'Checks start after the implementation commit.' : 'No check results have been captured yet.' }}</p></div></div>
+    <article v-for="check in checks.slice().reverse()" :key="check.id" class="check-card"><div class="check-card-heading"><UIcon name="i-lucide-terminal" /><strong>{{ check.name }}</strong><StatusBadge :status="check.status" /></div><code class="check-command">{{ JSON.parse(check.argv_json).join(' ') }}</code><small class="check-commit">{{ check.commit_sha }} · exit {{ check.exit_code ?? 'pending' }}</small><p v-if="check.reason">{{ check.reason }}</p><UCollapsible class="evidence-disclosure"><UButton color="neutral" variant="ghost" trailing-icon="i-lucide-chevron-down" class="disclosure-trigger">Captured log</UButton><template #content><pre class="log-view">{{ check.log_text || 'No output captured.' }}</pre></template></UCollapsible></article>
+  </section>
+</template>

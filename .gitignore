@@ -1,0 +1,13 @@
+node_modules/
+dist/
+target/
+apps/desktop/src-tauri/gen/
+.factory/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+apps/desktop/src-tauri/resources/
+release/
+apps/desktop/src/components.d.ts
+.nuxt-ui/

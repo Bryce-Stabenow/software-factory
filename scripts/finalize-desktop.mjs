@@ -1,0 +1,18 @@
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const app = join(root, 'apps/desktop/src-tauri/target/release/bundle/macos/Kulumin.app');
+if (!existsSync(app)) throw new Error('Build the macOS app first.');
+const identity = process.env.APPLE_SIGNING_IDENTITY ?? '-';
+execFileSync('/usr/bin/codesign', ['--force', '--sign', identity, ...(identity === '-' ? [] : ['--options','runtime']), app], { stdio: 'inherit' });
+execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', app], { stdio: 'inherit' });
+const release = join(root, 'release'); mkdirSync(release, { recursive: true });
+const archive = join(release, `Kulumin-0.1.0-macos-${process.arch}.zip`);
+execFileSync('/usr/bin/ditto', ['-c','-k','--sequesterRsrc','--keepParent',app,archive], { stdio: 'inherit' });
+const digest = createHash('sha256').update(readFileSync(archive)).digest('hex');
+writeFileSync(archive + '.sha256', `${digest}  ${archive.split('/').at(-1)}\n`);
+writeFileSync(join(release, 'release.json'), JSON.stringify({ version: '0.1.0', platform: 'darwin', arch: process.arch, signature: identity === '-' ? 'ad-hoc-local' : 'developer-id', notarized: false, archive: archive.split('/').at(-1), sha256: digest }, null, 2));
+console.log(`Verified ${identity === '-' ? 'local ad-hoc' : 'Developer ID'} signature. Archive: ${archive}. Notarization was not performed.`);

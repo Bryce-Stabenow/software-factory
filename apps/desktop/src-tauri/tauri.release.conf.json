@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "category": "DeveloperTool",
+    "shortDescription": "Human-supervised local software factory",
+    "resources": { "resources/companion/": "companion/" },
+    "macOS": { "minimumSystemVersion": "12.0" }
+  }
+}

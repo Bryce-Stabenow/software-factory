@@ -1,0 +1,14 @@
+import './schema-runtime';
+import { createApp } from 'vue';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import ui from '@nuxt/ui/vue-plugin';
+import App from './App.vue';
+import './style.css';
+const report = (message: string) => { if (isTauri()) void invoke('factory_webview_error', { message }).catch(() => {}); };
+report('Frontend module loaded');
+const app = createApp(App);
+app.use(ui);
+app.config.errorHandler = (error) => { report(error instanceof Error ? error.stack ?? error.message : String(error)); console.error(error); };
+report('Mounting frontend');
+app.mount('#app');
+report('Frontend mounted');

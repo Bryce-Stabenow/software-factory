@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "declaration": true
+  },
+  "include": [
+    "apps/factory-service/src/**/*.ts",
+    "packages/contracts/src/**/*.ts",
+    "scripts/restore-backup.ts"
+  ]
+}
