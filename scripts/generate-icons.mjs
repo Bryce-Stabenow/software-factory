@@ -1,4 +1,4 @@
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
@@ -20,8 +20,22 @@ execFileSync(process.execPath, [resolve(root, 'node_modules/@tauri-apps/cli/taur
 
 // Tauri's macOS PNG fallback cannot encode every high-resolution slot.
 // Generate an explicit ICNS with the CLI so Finder and Dock get all sizes.
+// Tauri can emit identical ICNS entries in different orders. Retain the existing
+// container when only that order changed, so rebuilding does not dirty Git.
+function iconEntries(bytes) {
+  if (bytes.toString('ascii', 0, 4) !== 'icns' || bytes.readUInt32BE(4) !== bytes.length) throw new Error('Invalid generated ICNS container.');
+  const entries = [];
+  for (let offset = 8; offset < bytes.length;) {
+    if (offset + 8 > bytes.length) throw new Error('Incomplete ICNS entry.');
+    const length = bytes.readUInt32BE(offset + 4);
+    if (length < 8 || offset + length > bytes.length) throw new Error('Invalid ICNS entry length.');
+    entries.push(bytes.subarray(offset, offset + length)); offset += length;
+  }
+  return Buffer.concat(entries.sort(Buffer.compare));
+}
 const temporary = mkdtempSync(resolve(tmpdir(), 'kulumin-icons-'));
 try {
   execFileSync(process.execPath, [resolve(root, 'node_modules/@tauri-apps/cli/tauri.js'), 'icon', 'public/kulumin-icon.svg', '--output', temporary], { cwd: desktop, stdio: 'pipe' });
-  copyFileSync(resolve(temporary, 'icon.icns'), resolve(desktop, 'src-tauri/icons/icon.icns'));
+  const generated = resolve(temporary, 'icon.icns'), destination = resolve(desktop, 'src-tauri/icons/icon.icns');
+  if (!existsSync(destination) || !iconEntries(readFileSync(generated)).equals(iconEntries(readFileSync(destination)))) copyFileSync(generated, destination);
 } finally { rmSync(temporary, { recursive: true, force: true }); }

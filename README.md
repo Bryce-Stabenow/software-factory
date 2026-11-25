@@ -12,7 +12,19 @@ Passing checks starts a fresh read-only reviewer. Test failures or actionable fi
 
 The Apple Silicon macOS app bundles its Node runtime and SQLite addon. It runs without this source checkout, npm, or a separate Node installation. Git and Codex CLI (with your own sign-in) are still required for real tasks; checks need their own locally available dependencies.
 
-Build and verify the local package:
+To rebuild and install the current checkout as a local update, run:
+
+```sh
+make rebuild
+```
+
+This installs locked npm dependencies, fetches the locked native dependencies for your machine, builds and verifies the release package, and runs the relocated-package smoke test. It refuses to interrupt active or queued factory work. Once checks pass, it quits Kulumin, holds the data-directory lock, backs up the previous app and a consistent SQLite snapshot plus artifacts, replaces `/Applications/Kulumin.app`, and launches the update. The new app uses the same data directory and applies normal schema migrations on startup. Projects, requests, tasks, approvals, local settings, logs, and existing worktree references are retained; managed worktree files stay at their current locations.
+
+Update backups are retained under `~/Library/Application Support/Kulumin/updates/<timestamp>/` (`Kulumin.app` and `data/`). Installation failures restore the previous app before launch. A launch failure keeps the new app and backup available without automatically downgrading a potentially migrated database. The command does not pull Git changes or move development data into the release database.
+
+Requires macOS, Node 22.12+, npm, Rust/Cargo, Xcode command-line tools, and network access for missing dependencies. It builds for the current machine; other operating systems are not supported by the packaging pipeline yet. To install in your personal Applications folder, use `KULUMIN_APPLICATIONS_DIR="$HOME/Applications" make rebuild`. If you already launch Kulumin with a custom `FACTORY_DATA_DIR` or `FACTORY_WORKSPACE_ROOT`, run the command with those same overrides; they are passed to the updated app. Otherwise the existing release data location below is used.
+
+To build and verify a package without installing it:
 
 ```sh
 npm run package:desktop
