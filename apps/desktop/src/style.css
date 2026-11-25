@@ -300,3 +300,13 @@ button { transition: background-color 120ms, color 120ms, border-color 120ms; }
   .request-group-heading { padding-left: 14px; padding-right: 14px; }
   .request-group-control { flex-wrap: wrap; }
 }
+
+.project-settings-panel { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.project-setup-tabs { min-width: 0; display: flex; gap: .25rem; }
+.project-setup-tabs [role="tab"] { flex: 1; padding: .6rem; border-radius: .4rem; }
+.project-setup-tabs [aria-selected="true"] { background: var(--ui-bg-elevated); font-weight: 600; }
+.project-setup-tabs [role="tab"]:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+@media (max-width: 640px) {
+  .project-setup-tabs { flex-wrap: wrap; }
+  .project-setup-tabs [role="tab"] { white-space: normal; flex: 1 1 100%; }
+}

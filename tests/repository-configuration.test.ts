@@ -16,7 +16,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
   execFileSync('git', ['init', '-b', 'main', root], { stdio: 'ignore' });
   writeFileSync(join(root, '.kulumin.yml'), valid);
   git(root, ['add', '.kulumin.yml']); git(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'Config']);
-  const project = { repo_path: root, default_branch: 'main', config_json: JSON.stringify({ repositoryConfigDigest: digest(parseRepositoryConfiguration(valid)), trustedRepository: true, executionEnabled: true }) } as Project;
+  const project = { repo_path: root, default_branch: 'main', config_json: JSON.stringify({ provider: 'codex', planningModel: null, implementationModel: null, reviewModel: null, repositoryConfigDigest: digest(parseRepositoryConfiguration(valid)), trustedRepository: true, executionEnabled: true }) } as Project;
   return { root, project };
 }
 test('strict versioned YAML accepts argv and rejects aliases, tags, duplicate keys, oversized files and unknown settings', () => {
@@ -69,7 +69,7 @@ test('project settings import YAML, enforce optimistic saves and restore the fil
   const project = store.snapshot().projects[0], state = repositoryConfigurationState(project);
   assert.equal(state.exists, true); assert.equal(state.authorized, false); assert.equal(state.local.initializationNetworkAllowed, false);
   const config = structuredClone(state.configuration!); config.verification.commands[0].name = 'Updated';
-  const save = { type: 'project.configuration.save' as const, projectId: project.id, expectedVersion: project.version, expectedDigest: state.digest, configuration: config, local: { executionEnabled: false, trustedRepository: false } };
+  const save = { type: 'project.configuration.save' as const, projectId: project.id, expectedVersion: project.version, expectedDigest: state.digest, configuration: config, local: { provider: 'codex', planningModel: null, implementationModel: null, reviewModel: null, executionEnabled: false, trustedRepository: false } };
   const before = readFileSync(join(root, '.kulumin.yml'), 'utf8');
   store.db.exec("CREATE TRIGGER reject_settings BEFORE UPDATE ON projects BEGIN SELECT RAISE(ABORT, 'fixture'); END");
   assert.equal(service.dispatch(save).ok, false); assert.equal(readFileSync(join(root, '.kulumin.yml'), 'utf8'), before);

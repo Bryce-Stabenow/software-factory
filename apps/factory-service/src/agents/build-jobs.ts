@@ -249,7 +249,7 @@ export class BuildJobs {
     this.store.db.prepare("UPDATE reviews SET status='stale' WHERE task_id=? AND status='current'").run(task.id);
     this.store.db.prepare("UPDATE validation_runs SET status='stale',reason='Implementation or repair started; fresh validation is required.' WHERE task_id=? AND status='passed'").run(task.id);
     const stageSignal = AbortSignal.any([job.controller.signal, AbortSignal.timeout(config.implementationTimeoutMs)]);
-    const output = await this.implementer.implement({ cwd: workspace.path, model: JSON.parse(task.provider_policy_json).model, signal: stageSignal, timeoutMs: config.implementationTimeoutMs,
+    const output = await this.implementer.implement({ cwd: workspace.path, model: JSON.parse(task.provider_policy_json).implementationModel ?? undefined, signal: stageSignal, timeoutMs: config.implementationTimeoutMs,
       guard: () => { stageSignal.throwIfAborted(); this.guard(job, status); }, onEvent: event => this.event(job, event),
       prompt: redact(`${repair ? 'Repair only defects in' : 'Implement'} this human-approved plan in this isolated Git worktree. Preserve existing edits. Do not reset, merge, push, deploy, run commands, edit Git metadata, or weaken tests to hide defects. The service commits and validates changes. Human feedback may clarify defects within approved scope; report limitations for new scope requiring a new plan.
 Task: ${task.id}
@@ -279,7 +279,7 @@ Defects and human feedback: ${JSON.stringify(failures ?? null)}`),
     const previousFindings = this.store.db.prepare('SELECT commit_sha,verdict,findings_json,summary FROM reviews WHERE task_id=? ORDER BY rowid DESC LIMIT 5').all(task.id);
     const summaries = this.store.db.prepare("SELECT stage,summary FROM agent_runs WHERE task_id=? AND stage IN ('implement','repair') ORDER BY rowid DESC LIMIT 4").all(task.id);
     const checks = this.store.db.prepare('SELECT name,commit_sha,status,exit_code,log_text FROM validation_runs WHERE task_id=? AND commit_sha=? ORDER BY rowid').all(task.id, details.currentHead);
-    const result = reviewSchema.parse(await this.reviewer.review({ cwd: snapshot.path, files: snapshot.files, commitSha: details.currentHead, signal: job.controller.signal, model: JSON.parse(task.provider_policy_json).model, onEvent: event => this.event(job, event),
+    const result = reviewSchema.parse(await this.reviewer.review({ cwd: snapshot.path, files: snapshot.files, commitSha: details.currentHead, signal: job.controller.signal, model: JSON.parse(task.provider_policy_json).reviewModel ?? undefined, onEvent: event => this.event(job, event),
       prompt: redact(`Independently review this exact committed change. Read relevant source and tests. Echo commitSha exactly. Block on insufficient evidence; request changes for actionable defects.
 Task: ${task.id}
 Commit: ${details.currentHead}

@@ -32,7 +32,7 @@ class FixtureValidator implements ValidationAdapter {
     });
   }
 }
-async function setup(t: { after: (fn: () => unknown) => void }, options: { hang?: boolean; implementer?: ImplementationAdapter; reviewer?: ReviewAdapter; validator?: ValidationAdapter; commands?: ExecutionConfig['validationCommands']; enabled?: boolean } = {}) {
+async function setup(t: { after: (fn: () => unknown) => void }, options: { hang?: boolean; implementer?: ImplementationAdapter; reviewer?: ReviewAdapter; validator?: ValidationAdapter; commands?: ExecutionConfig['validationCommands']; enabled?: boolean; models?: { planningModel: string; implementationModel: string; reviewModel: string } } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'factory-build-')), repo = join(directory, 'repository');
   execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'ignore' });
   writeFileSync(join(repo, 'greeting.cjs'), original);
@@ -41,7 +41,7 @@ async function setup(t: { after: (fn: () => unknown) => void }, options: { hang?
   const mainHead = git(repo, ['rev-parse', 'HEAD']).trim();
   writeFileSync(join(repo, 'keep-dirty.txt'), 'Never overwrite my main checkout.\n');
   let implementationCalls = 0;
-  const planner: PlannerAdapter = { async health() { return { available: true, authenticated: true, message: 'Fixture' }; }, async plan() { return { summary: 'Add optional formal greeting', assumptions: [], questions: [], steps: ['Update greeting.cjs', 'Validate backward compatibility'], affectedAreas: ['greeting.cjs'], acceptanceCriteria: ['Default greeting stays unchanged'], testStrategy: ['Run greeting tests'], risks: [] }; } };
+  const planner: PlannerAdapter = { async health() { return { available: true, authenticated: true, message: 'Fixture' }; }, async plan(input) { if (options.models) assert.equal(input.model, options.models.planningModel); return { summary: 'Add optional formal greeting', assumptions: [], questions: [], steps: ['Update greeting.cjs', 'Validate backward compatibility'], affectedAreas: ['greeting.cjs'], acceptanceCriteria: ['Default greeting stays unchanged'], testStrategy: ['Run greeting tests'], risks: [] }; } };
   const implementer: ImplementationAdapter = { async implement(input) {
     implementationCalls++;
     const tools = new WorkspaceFiles(input.cwd, input.guard);
@@ -67,7 +67,7 @@ async function setup(t: { after: (fn: () => unknown) => void }, options: { hang?
   const makeTask = async (title = 'Formal greeting') => {
     const { id: requestId } = call<{ id: string }>({ type: 'request.create', projectId, title, body: 'Implement an optional formal greeting without changing the default.', kind: 'feature', priority: 'normal', acceptanceCriteria: ['The original call still works'] });
     const task = call<Task>({ type: 'task.createFromRequest', requestId });
-    call({ type: 'task.assign', taskId: task.id, expectedVersion: task.version, provider: 'codex' });
+    call({ type: 'task.assign', taskId: task.id, expectedVersion: task.version, provider: 'codex', ...options.models });
     await service.planning.idle(); return snapshot().tasks.find(item => item.id === task.id)!;
   };
   const approve = (task: Task) => { const plan = snapshot().plans.find(plan => plan.task_id === task.id)!; return call<Task>({ type: 'task.reviewPlan', taskId: task.id, expectedVersion: task.version, revisionId: plan.id, digest: plan.sha256_digest, action: 'approve' }); };
@@ -316,16 +316,18 @@ test('evidence verification detects altered checks and captured logs', async t =
 test('review changes trigger repair, a new commit, fresh checks, and fresh independent review', async t => {
   let reviews = 0, writes = 0;
   const reviewer: ReviewAdapter = { async review(input) {
+    assert.equal(input.model, 'review-model');
     reviews++; if (reviews === 1) return { commitSha: input.commitSha, verdict: 'changes_requested', summary: 'Please correct the formal branch.', findings: [finding] };
     return passedReview.review(input);
   } };
   const implementer: ImplementationAdapter = { async implement(input) {
+    assert.equal(input.model, 'implementation-model');
     writes++; const tools = new WorkspaceFiles(input.cwd, input.guard), before = JSON.parse(tools.call('read_repository_file', { path: 'greeting.cjs' }));
     if (writes > 1) assert.match(input.prompt, /Formal branch needs a correction/);
     tools.call('write_repository_file', { path: 'greeting.cjs', content: implemented + (writes > 1 ? '// independently requested repair\n' : ''), expectedDigest: before.digest });
     return { summary: writes > 1 ? 'Corrected the review finding' : 'Implemented greeting', limitations: [], touchedPaths: tools.touched() };
   } };
-  const h = await setup(t, { reviewer, implementer }); h.approve(await h.makeTask()); await h.service.builds.idle();
+  const h = await setup(t, { reviewer, implementer, models: { planningModel: 'planning-model', implementationModel: 'implementation-model', reviewModel: 'review-model' } }); h.approve(await h.makeTask()); await h.service.builds.idle();
   const snapshot = h.snapshot(); assert.equal(snapshot.tasks[0].status, 'FINAL_REVIEW', snapshot.tasks[0].reason ?? '');
   assert.equal(reviews, 2); assert.equal(writes, 2); assert.equal(snapshot.runs.filter(run => run.stage === 'repair').length, 1);
   assert.notEqual(snapshot.reviews[0].commit_sha, snapshot.reviews[1].commit_sha); assert.equal(snapshot.reviews[0].status, 'stale');
@@ -463,7 +465,7 @@ async function configureYaml(h: Awaited<ReturnType<typeof setup>>, options: { ne
   const project = h.snapshot().projects[0];
   h.call({ type: 'project.configuration.save', projectId: project.id, expectedVersion: project.version, expectedDigest: null,
     configuration: { version: 1, worktree_init: { network: options.network ?? false, commands: options.commands ?? [{ name: 'Prepare dependencies', run: [process.execPath, '-e', "require('fs').mkdirSync('node_modules',{recursive:true});require('fs').writeFileSync('node_modules/ready','ready')"], timeout_seconds: 2 }] }, verification: { commands: [{ name: check.name, run: check.argv, timeout_seconds: 2 }] } },
-    local: { executionEnabled: true, trustedRepository: true, initializationNetworkAllowed: options.allowNetwork ?? false } });
+    local: { provider: 'codex', planningModel: null, implementationModel: null, reviewModel: null, executionEnabled: true, trustedRepository: true, initializationNetworkAllowed: options.allowNetwork ?? false } });
   // Dependency output must stay ignored in each worktree.
   writeFileSync(join(h.repo, '.gitignore'), 'node_modules/\n');
   if (options.commit !== false) { git(h.repo, ['add', '.kulumin.yml', '.gitignore']); git(h.repo, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'Shared setup']); }
@@ -683,4 +685,21 @@ test('a review-base change during independent review cannot authorize acceptance
   assert.equal(h.snapshot().tasks[0].status, 'BLOCKED');
   assert.match(h.snapshot().tasks[0].reason!, /changed during review/);
   assert.equal(h.snapshot().evidence.length, 0);
+});
+
+test('defaults-only settings retain exact YAML and final review evidence', async t => {
+  const h = await setup(t); await configureYaml(h);
+  h.approve(await h.makeTask()); await h.service.builds.idle();
+  const before = h.snapshot();
+  assert.equal(before.tasks[0].status, 'FINAL_REVIEW');
+  const project = before.projects[0];
+  const state = h.call<import('../packages/contracts/src/index.js').RepositoryConfigurationState>({ type: 'project.configuration.get', projectId: project.id });
+  const yaml = readFileSync(join(h.repo, '.kulumin.yml'), 'utf8');
+  h.call({ type: 'project.configuration.save', projectId: project.id, expectedVersion: project.version, expectedDigest: state.digest, configuration: state.configuration!, local: { ...state.local, provider: 'fake', planningModel: 'new-plan', implementationModel: 'new-build', reviewModel: 'new-review' } });
+  const after = h.snapshot();
+  assert.equal(readFileSync(join(h.repo, '.kulumin.yml'), 'utf8'), yaml);
+  assert.deepEqual(after.validations, before.validations);
+  assert.deepEqual(after.evidence, before.evidence);
+  assert.equal(after.tasks[0].status, 'FINAL_REVIEW');
+  assert.equal(after.tasks[0].provider_policy_json, before.tasks[0].provider_policy_json);
 });

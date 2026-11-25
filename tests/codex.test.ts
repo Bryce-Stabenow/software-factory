@@ -51,7 +51,7 @@ for (const [mode, expected] of [['invalid', 'INVALID_PLAN'], ['no-read', 'INVALI
     assert.ok(['FAILED', 'BLOCKED'].includes(snapshot.tasks[0].status));
     assert.equal(snapshot.runs[0].error_code, expected);
     assert.equal(snapshot.plans.length, 0); assert.equal(snapshot.approvals.length, 0);
-    assert.doesNotMatch(JSON.stringify(snapshot), /sk-provider-secret|private-email/);
+    assert.doesNotMatch(JSON.stringify(snapshot), /[REDACTED]|private-email/);
     if (mode === 'permission') assert.equal((h.store.db.prepare('SELECT status FROM permission_requests').get() as { status: string }).status, 'denied');
   });
 }
@@ -81,7 +81,7 @@ test('timeouts fail visibly without producing a plan', async t => {
 });
 test('snapshots exclude secrets, ignored files, binary files, and symlink escapes', async t => {
   const h = setup(t);
-  writeFileSync(join(h.repo, '.env'), 'secret=never-send');
+  writeFileSync(join(h.repo, '.env'), 'secret=[REDACTED]');
   writeFileSync(join(h.repo, '.gitignore'), 'ignored.txt\n'); writeFileSync(join(h.repo, 'ignored.txt'), 'never-send');
   writeFileSync(join(h.repo, 'blob.bin'), Buffer.from([0, 1, 2]));
   writeFileSync(join(h.directory, 'outside.txt'), 'never-send');
@@ -121,10 +121,10 @@ test('the planning queue enforces two concurrent runs and cancellation drains qu
 test('a failed planning attempt can retry with an explicitly selected model', async t => {
   const h = setup(t, 'failed'); h.assign(); await h.service.planning.idle();
   const task = h.snapshot().tasks[0];
-  h.call({ type: 'task.retry', taskId: task.id, expectedVersion: task.version, model: 'explicit-model' });
+  h.call({ type: 'task.retry', taskId: task.id, expectedVersion: task.version, planningModel: 'explicit-model' });
   await h.service.planning.idle();
   assert.equal(h.snapshot().runs.at(-1)?.model, 'explicit-model');
-  assert.equal(JSON.parse(h.snapshot().tasks[0].provider_policy_json).model, 'explicit-model');
+  assert.equal(JSON.parse(h.snapshot().tasks[0].provider_policy_json).planningModel, 'explicit-model');
 });
 test('a revision requested from a real plan uses a fresh session and requires new approval', async t => {
   const h = setup(t); h.assign(); await h.service.planning.idle();
@@ -156,3 +156,18 @@ for (const mode of ['success', 'no-read', 'permission', 'unsafe', 'review-write'
     assert.equal(snapshotDigest(snapshot.path, snapshot.files), snapshot.digest);
   });
 }
+
+test('planning retry retains omitted choices and null resets only planning', async t => {
+  const h = setup(t, 'failed');
+  h.call({ type: 'task.assign', taskId: h.task.id, expectedVersion: h.task.version, provider: 'codex', planningModel: 'plan-id', implementationModel: 'build-id', reviewModel: 'review-id' });
+  await h.service.planning.idle();
+  for (const override of [{}, { planningModel: null }]) {
+    const task = h.snapshot().tasks[0];
+    h.call({ type: 'task.retry', taskId: task.id, expectedVersion: task.version, ...override });
+    await h.service.planning.idle();
+    const policy = JSON.parse(h.snapshot().tasks[0].provider_policy_json);
+    assert.equal(policy.planningModel, 'planningModel' in override ? null : 'plan-id');
+    assert.equal(policy.implementationModel, 'build-id');
+    assert.equal(policy.reviewModel, 'review-id');
+  }
+});
