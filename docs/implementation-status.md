@@ -75,6 +75,22 @@ The first increment covered the scaffold and Milestone 1 foundations. Native pac
 - Locally bundled Lucide icons and system font fallbacks, unchanged native CSP, and reduced-motion support.
 - All 97 regression tests, typechecking/production builds, release packaging, and relocated-package verification pass. Browser request-management/theme/navigation interactions and the packaged native command palette, tabs, diff, exact-commit evidence, and close lifecycle were exercised with disposable data.
 
+## Delivered: direct task start and guided project setup
+
+- Request submission offers Save for later or Start task, with explicit planner/model choices. Starting queues read-only planning immediately; saved request menus offer Start task with Codex.
+- Atomic, version-checked request.startTask creates/assigns a task transactionally, reuses unstarted tasks, rejects archived/stale/started requests, and rolls back partial creation on queue failure.
+- Connecting a project opens its settings immediately. Existing projects have an explicit settings action; planning-only setup and deferral keep execution disabled.
+- Named validation rows replace JSON editing, with command examples, an explanation of checks, timeouts, quoted argument support, and clear dependency/network requirements. Explicit trust and plan approval remain mandatory for implementation.
+- 104 regression tests, production build/typechecking, native packaging/signature checks, relocated-package verification, and browser flow checks pass. The installed app was updated and its project/request/approval data fingerprint remained unchanged.
+
+## Delivered: validation setup failure handling and recovered real task
+
+- Missing check tools/dependencies and denied IPC-socket startup now block for setup without invoking code repairs or spending the approved plan's repair budget.
+- Worktree/project help explains that ignored dependencies are local to each worktree and gives the locked npm development-install command.
+- Kulumin's tests load tsx through Node rather than the CLI, preserving test coverage without the sandbox-blocked IPC socket.
+- Recovered the real File selection task: resolved npm/Cargo locks, provisioned its dependencies, verified the packaged native picker and browser fallback, committed repairs on its isolated branch, and passed real Tests/Typecheck/Build plus fresh independent review. It remains FINAL_REVIEW awaiting human acceptance; no merge or approval bypass occurred.
+- 107 regression tests and production/native package checks pass.
+
 ## Remaining work and optional extensions
 
 1. Developer ID signing/notarization for cross-machine distribution; Intel/universal and non-macOS packaging verification.

@@ -6,7 +6,7 @@ A local, single-user software factory with deliberate human approval gates, buil
 
 The app now supports **real Codex planning → exact plan approval → implementation in an isolated Git worktree → a local commit → configured validation → independent review → final human acceptance**. Progress, decisions, worktrees, checks, and recoverable failures persist in SQLite. A fake planner remains available for simulation and cannot authorize real execution.
 
-Passing checks starts a fresh read-only reviewer. Test failures or actionable findings trigger up to three repairs, each followed by fresh checks and review. A passing independent review produces `FINAL_REVIEW`; only your decision can mark the exact reviewed commit `ACCEPTED`. Nothing is automatically merged, pushed, or deployed.
+Passing checks starts a fresh read-only reviewer. Test failures or actionable findings trigger up to three repairs, each followed by fresh checks and review. A passing independent review produces `FINAL_REVIEW`; only your decision can mark the exact reviewed commit `ACCEPTED`. After acceptance, use the delivery controls in the task overview to merge into the project’s default branch, push the accepted task branch to a configured remote, or push the default branch after merging. Merge requires a clean registered checkout on the default branch and checks for conflicts before changing files. Push uses your existing Git credentials and never force-pushes. Delivery actions and commit IDs are recorded in Activity. Nothing is automatically merged, pushed, or deployed.
 
 ## Native app for daily use
 
@@ -63,7 +63,7 @@ The amber ship uses three closely spaced swept sails and a low hull in three sha
 
 ## Requests and revisions
 
-**Requests** offers **Edit request** and **Archive request** in the row menu, plus an active/archived/all filter. Open a request to save edits or create its task. Archived requests can be restored; archiving never cancels or hides their tasks from Issues or Overview. All updates use optimistic version checks and create immutable history.
+**Requests** offers **Edit request** and **Archive request** in the row menu, plus an active/archived/all filter. **Save for later** keeps a request in the backlog without starting work. **Start task** saves it and immediately queues planning with the selected provider/model. Saved requests also offer **Start task with Codex** in the row menu; no separate task-creation step is required. If starting fails, the saved request stays available for retry. Archived requests can be restored; archiving never cancels or hides their tasks from Issues or Overview. All updates use optimistic version checks and create immutable history.
 
 Existing tasks continue to use the request version captured when they were created, including the original project and acceptance criteria. Editing the request does not alter an approved plan or implementation. **Create revised request** copies the latest request into a new identity so updated scope can receive its own task and approval.
 
@@ -92,22 +92,46 @@ Restore checks database integrity/schema and retains the original worktree paths
 ## Use implementation and validation
 
 1. Register a repository in **Projects**. Its default branch must have an initial commit. Dirty files in the main checkout remain untouched and are not copied into a task’s worktree.
-2. Expand **Implementation & validation settings**. Leave execution disabled for unknown/untrusted repositories. For a trusted repository, acknowledge code execution, enable implementation, and configure check commands.
-3. Enter checks as literal argument arrays, with unique names and bounded timeouts:
+2. Connecting a repository opens **Finish project setup**. Existing projects have a **Project settings** button. Save it for planning only, set it up later, or explicitly trust the repository and enable implementation.
+3. Configure **Worktree initialization** and **Verification** with named commands and timeouts. Settings reads and writes `.kulumin.yml` at the repository root. Commit this file on the default branch before starting a new task worktree. Use commands your repository actually supports.
 
-   ```json
-   [
-     { "name": "Typecheck", "argv": ["npm", "run", "typecheck"], "timeoutMs": 60000 },
-     { "name": "Tests", "argv": ["npm", "test"], "timeoutMs": 120000 }
-   ]
-   ```
+   | Check | Example command | Purpose |
+   |---|---|---|
+   | Tests | `npm test` | Verify expected behavior |
+   | Lint | `npm run lint` | Find style problems and common mistakes |
+   | Build | `npm run build` | Check compilation/build output |
 
-4. Create a request and task. Choose **Codex**, check the connection/models, and start planning. Planning uses a bounded read-only snapshot. Answer any clarification questions or request revisions before approval.
+   Every configured check is required. Each runs after implementation and repairs in the isolated task worktree, and must succeed for the exact commit before independent review. Set the timeout long enough for your suite (for example, 180 seconds for a two-minute test run). Add separate checks instead of shell chains such as `npm test && npm run build`; quoted arguments are supported. The helper examples are suggestions, not automatic detection of repository scripts. Implementation requires at least one check in the setup form; planning requires none.
+4. Create a request and choose **Save for later** or **Start task**. Start task immediately queues read-only planning; Codex uses your local CLI sign-in and the selected model/catalog default. Answer any clarification questions or request revisions before approval. Simulation remains explicitly labeled and cannot authorize execution.
 5. Approve the exact plan revision/digest. If project execution is enabled, a worker starts automatically; otherwise the task remains queued until you explicitly start it. Existing queued tasks are not dispatched just because settings change. Simulated plans never start a real implementation.
 6. Watch the task’s worktree, base/current commit, diff, progress, and validation logs. Successful checks for the exact current commit start independent read-only code review. Older tasks already at `CODE_REVIEW` offer **Revalidate & review**.
 7. Inspect **Final human review**: implementation/repair summaries, limitations, diff, required checks and captured logs, independent findings and history, base/current SHA, and evidence digest. Choose **Accept reviewed commit**, **Request changes**, or **Reject**. Changes/rejection require feedback. Requests for changes stay within the approved plan and use the same three-repair budget; new scope needs a new request and approval.
 
-Checks need dependencies already available locally. The factory does not install dependencies or grant network access. Open the task worktree to prepare trusted dependencies yourself, or configure commands that work offline. Missing commands are disclosed as **NOT RUN** and block code review. Nonzero exits and timeouts trigger bounded repairs. Source/HEAD changes during validation and changed check configuration block progression and require inspection.
+Initialization runs in order before implementation in each new task worktree. Git does not copy ignored `node_modules` from your main checkout. For npm projects with a lockfile, configure `npm ci --include=dev` in initialization and request network access if downloads are needed. Each user must separately trust the repository, enable execution, and grant initialization network access locally; Git never transfers these permissions. Verification always stays offline.
+
+```yaml
+version: 1
+worktree_init:
+  network: true
+  commands:
+    - name: Install dependencies
+      run: [npm, ci, --include=dev]
+      timeout_seconds: 300
+verification:
+  commands:
+    - name: Tests
+      run: [npm, test]
+      timeout_seconds: 300
+    - name: Build
+      run: [npm, run, build]
+      timeout_seconds: 300
+```
+
+Commands are literal argument arrays, without implicit shell expansion. Invoke custom hooks as scripts, for example `[node, scripts/setup.mjs]`. Hooks may prepare ignored dependencies/artifacts; source or HEAD changes block the task and preserve those changes for inspection. Commands are bounded to 12 per section, with initialization timeouts up to 1,800 seconds and verification up to 300 seconds. The file is strict versioned YAML (no aliases, custom tags, duplicate keys, symlinks, or unknown settings).
+
+Successful initialization is remembered per managed worktree and initialization configuration. Failures, cancellations and service restarts preserve setup logs, block progression and do not consume code-repair attempts. Recovery retries unfinished setup; **Initialize & revalidate** explicitly reruns successful setup before fresh verification and review. Existing tasks/projects without YAML retain their previous local verification configuration until migrated through settings. A file changed outside settings must be reviewed and saved locally before execution; uncommitted configuration cannot authorize a new worktree. Verification and final evidence bind to the committed YAML version.
+
+Missing tools block for setup without consuming code-repair attempts. If a `tsx` CLI script needs a sandbox-blocked IPC socket, use `node --import tsx --test` instead; Kulumin’s own test script uses this entry point. Missing verification commands are disclosed as **NOT RUN** and block code review. Verification nonzero exits and timeouts trigger bounded repairs, while source/HEAD changes or changed configuration require inspection.
 
 The implementer uses bounded list/read/write/delete tools confined to the task worktree. Shell, Git, network, plugins, and subagents are unavailable to the model. File edits require the digest from the latest read, and the service checks approval, task status, and run ownership before each operation. The service verifies and commits actual Git changes with hooks/signing disabled. Repositories with executable Git filters are currently blocked. Binary, symlink, protected metadata, and oversized file edits are unsupported.
 
@@ -117,9 +141,9 @@ Project code is sent to OpenAI through the signed-in Codex account. Snapshot/pat
 
 **Cancel task** and **Stop all workers** signal workers and terminate owned process groups as needed. The task’s branch, worktree, partial edits, commits, logs, and approval history remain. A stopping worker must terminate before recovery is available.
 
-On restart, unfinished runs/checks become interrupted, never successful. Missing or changed worktree metadata is surfaced without resetting branches or recreating missing worktrees. A prior live process PID blocks recovery until inspected/stopped. The service owns an OS-backed exclusive SQLite lock in `service-owner.db`; a diagnostic `service.lock` also prevents overlap with older service versions. OS ownership releases on process crash.
+On restart, unfinished runs, initialization and checks become interrupted, never successful. Missing or changed worktree metadata is surfaced without resetting branches or recreating missing worktrees. A prior live process PID blocks recovery until inspected/stopped. The service owns an OS-backed exclusive SQLite lock in `service-owner.db`; a diagnostic `service.lock` also prevents overlap with older service versions. OS ownership releases on process crash.
 
-For a stopped task, **Refresh changes**, inspect the current HEAD and diff, then choose **Resume implementation** or **Revalidate & review**. Recovery binds to the displayed HEAD and worktree fingerprint; stale inspections are rejected. Implementation continues in the existing worktree using a fresh Codex session. Validation-only recovery requires a clean committed worktree and does not invoke an implementer; it runs fresh checks and independent review. Full provider-session resume is not promised.
+For a stopped task, **Refresh changes**, inspect the current HEAD and diff, then choose **Resume implementation**, **Revalidate & review**, or **Initialize & revalidate**. Recovery binds to the displayed HEAD and worktree fingerprint; stale inspections are rejected. Implementation continues in the existing worktree using a fresh Codex session. Validation-only recovery requires a clean committed worktree and does not invoke an implementer; it runs fresh checks and independent review. Full provider-session resume is not promised.
 
 The shared queue permits **two workers per factory service**, including planning/build/check/review/repair stages. Implementation defaults to a 15-minute model deadline, two attempts per approved plan, bounded file writes, and one-minute bounds on mutating Git operations. Check timeouts are per command. Project settings cannot change while that project has pending/active runs. Changing required checks invalidates prior passing evidence and acceptance. Worktree edits or later commits likewise revoke current acceptance on inspection/restart, preserving decision history. Final decisions always recheck the current HEAD and full evidence digest server-side.
 
@@ -157,8 +181,11 @@ Opt-in real-provider checks use the existing Codex sign-in and disposable sample
 npm run test:codex
 npm run test:codex -- --probe-only
 npm run test:implementation
+npm run test:initialization
 ```
 
 The implementation smoke test makes real planning, implementation, independent review, and human-requested repair turns, approves/accepts only its disposable fixture, verifies fresh commits/checks/reviews and exact final acceptance, preserves the main checkout, probes workspace-write/network restrictions, and checks validation process-tree cancellation. Tested with **Codex CLI 0.153.4**. A model catalog is not an entitlement guarantee; access is verified by successful inference. Models are selected before a run and never silently changed mid-run.
 
 See [implementation status](docs/implementation-status.md), [verification record](docs/verification.md), [review/acceptance ADR](docs/architecture-decisions/0005-review-repair-and-final-acceptance.md), [daily-use desktop ADR](docs/architecture-decisions/0006-daily-use-desktop-and-request-history.md), and [worktree/execution ADR](docs/architecture-decisions/0004-approved-worktree-execution.md). Richer provider/auto-assignment policy, optional notifications/PR integration, notarized distribution, and explicit worktree cleanup remain future work. Claude stays disabled.
+
+`npm run test:initialization` verifies real app-server sandboxed dependency setup (`npm ci`) and offline verification (`npm test`) in a disposable Git worktree using a local fixture dependency. It makes no model calls or registry downloads.

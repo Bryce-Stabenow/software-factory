@@ -34,7 +34,7 @@ export class Store {
     this.db.pragma('busy_timeout = 5000');
     this.db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
     const current = this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null };
-    if ((current.version ?? 0) > 6) throw new Error('Database schema is newer than this service');
+    if ((current.version ?? 0) > 7) throw new Error('Database schema is newer than this service');
     if (!current.version) this.transaction(() => {
       this.db.exec(migration);
       this.db.prepare('INSERT INTO schema_migrations VALUES (1, ?)').run(new Date().toISOString());
@@ -80,6 +80,11 @@ export class Store {
       for (const request of this.db.prepare('SELECT * FROM requests').all() as Request[]) this.recordRequest(request.id);
       this.db.prepare('INSERT INTO schema_migrations VALUES (6,?)').run(new Date().toISOString());
     });
+    if ((current.version ?? 0) < 7) this.transaction(() => {
+      this.db.exec(`ALTER TABLE agent_runs ADD COLUMN implementation_started INTEGER NOT NULL DEFAULT 1;
+        CREATE TABLE initialization_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), workspace_id TEXT NOT NULL REFERENCES workspaces(id), run_id TEXT NOT NULL REFERENCES agent_runs(id), source_sha TEXT NOT NULL, file_digest TEXT NOT NULL, config_digest TEXT NOT NULL, status TEXT NOT NULL, log_text TEXT NOT NULL DEFAULT '', reason TEXT, results_json TEXT NOT NULL DEFAULT '[]', started_at TEXT NOT NULL, finished_at TEXT);
+        INSERT INTO schema_migrations VALUES (7, strftime('%Y-%m-%dT%H:%M:%fZ','now'));`);
+    });
   }
   recordRequest(id: string) {
     const request = this.db.prepare('SELECT * FROM requests WHERE id=?').get(id) as Request;
@@ -113,6 +118,7 @@ export class Store {
       evidence: this.db.prepare('SELECT * FROM evidence_bundles ORDER BY rowid').all() as EvidenceBundle[],
       workspaces: this.db.prepare('SELECT * FROM workspaces ORDER BY created_at').all() as Workspace[],
       validations: this.db.prepare('SELECT id,task_id,commit_sha,name,argv_json,exit_code,status,log_text,reason,started_at,finished_at FROM validation_runs ORDER BY started_at').all() as ValidationRun[],
+      initializations: this.db.prepare('SELECT * FROM initialization_runs ORDER BY rowid').all() as import('../../../../packages/contracts/src/index.js').InitializationRun[],
       providers: [],
       events, cursor: events.at(-1)?.sequence ?? 0,
       health: { provider: 'mixed', mode: 'Human-approved implementation in isolated worktrees', service: 'ready' },

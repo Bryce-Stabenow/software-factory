@@ -1,9 +1,10 @@
+import { repositoryConfigurationState, writeRepositoryConfiguration, verificationCommands } from './configuration/repository.js';
 import { Operations } from './operations/diagnostics.js';
 import { randomUUID } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { ZodError } from 'zod';
-import { commandSchema, executionConfigSchema, type Command, type Project, type Request, type Response } from '../../../packages/contracts/src/index.js';
+import { commandSchema, executionConfigSchema, repositoryConfigurationSchema, localProjectSettingsSchema, type Command, type Project, type Request, type Response } from '../../../packages/contracts/src/index.js';
 import { Store } from './persistence/store.js';
 import { digest, FactoryError, fail, Workflow } from './workflows/engine.js';
 import { FakeAgent } from './agents/fake.js';
@@ -13,6 +14,7 @@ import type { ProviderHealth, Question } from '../../../packages/contracts/src/i
 import { resolve } from 'node:path';
 import { BuildJobs, executionConfig } from './agents/build-jobs.js';
 import { defaultWorkspaceRoot, WorkspaceManager } from './git/workspaces.js';
+import { Delivery } from './git/delivery.js';
 import { RunPool } from './scheduler/run-pool.js';
 import type { ValidationAdapter } from './checks/validation.js';
 import { childEnvironment, CodexError } from './agents/rpc.js';
@@ -23,6 +25,7 @@ export class FactoryService {
   readonly planning: PlanningJobs;
   readonly builds: BuildJobs;
   readonly operations: Operations;
+  readonly delivery: Delivery;
   private codexHealth: ProviderHealth = { id: 'codex', available: false, authenticated: false, message: 'Not checked. Check the local Codex CLI connection in Settings.' };
   constructor(readonly store: Store, options: { planner?: PlannerAdapter; implementer?: ImplementationAdapter; validator?: ValidationAdapter; reviewer?: ReviewAdapter; dataDir?: string; workspaceRoot?: string } = {}) {
     this.workflow = new Workflow(store);
@@ -30,10 +33,16 @@ export class FactoryService {
     this.operations = new Operations(store, dataDir);
     this.planning = new PlanningJobs(store, this.workflow, dataDir, options.planner, pool);
     this.builds = new BuildJobs(store, this.workflow, new WorkspaceManager(store, options.workspaceRoot ?? defaultWorkspaceRoot(dataDir)), dataDir, pool, options.implementer, options.validator, options.reviewer);
+    this.delivery = new Delivery(store, this.workflow, this.builds.workspaces);
+    this.workflow.verifyMerged = task => this.delivery.verifyMerged(task);
     this.workflow.verifyFinalEvidence = task => this.builds.evidence.verify(task);
   }
   async handle(input: unknown): Promise<Response> {
     const command = commandSchema.safeParse(input);
+    if (command.success && command.data.type === 'delivery.push') {
+      try { return { ok: true, data: await this.delivery.push(command.data) }; }
+      catch (error) { return { ok: false, error: { code: error instanceof FactoryError ? error.code : 'INTERNAL_ERROR', message: error instanceof FactoryError ? error.message : 'Push failed. Check remote access and Git authentication, then retry.' } }; }
+    }
     if (command.success && command.data.type === 'backup.create') {
       try { return { ok: true, data: await this.operations.backup() }; }
       catch { return { ok: false, error: { code: 'INTERNAL_ERROR', message: 'The database backup could not be completed. Check available storage.' } }; }
@@ -80,12 +89,43 @@ export class FactoryService {
       case 'snapshot': return this.store.transaction(() => ({ ...this.store.snapshot(), providers: [{ id: 'fake', available: true, authenticated: true, message: 'Deterministic simulation; no model calls.' }, this.codexHealth] }));
       case 'provider.health': fail('INVALID_INPUT', 'Provider checks require the asynchronous command handler.');
       case 'workspace.open': fail('INVALID_INPUT', 'Opening a worktree requires the asynchronous command handler.');
+      case 'delivery.inspect': return this.delivery.inspect(command.taskId);
+      case 'delivery.merge': return this.delivery.merge(command);
+      case 'delivery.push': fail('INVALID_INPUT', 'Pushing requires the asynchronous command handler.');
       case 'workspace.inspect': return this.builds.inspect(command.taskId);
+      case 'project.configuration.get': {
+        const project = this.store.db.prepare('SELECT * FROM projects WHERE id=?').get(command.projectId) as Project | undefined;
+        if (!project) fail('NOT_FOUND', 'Project not found.');
+        return repositoryConfigurationState(project);
+      }
+      case 'project.configuration.save': {
+        let written: ReturnType<typeof writeRepositoryConfiguration> | undefined;
+        try {
+          return this.store.transaction(() => {
+            const project = this.store.db.prepare('SELECT * FROM projects WHERE id=?').get(command.projectId) as Project | undefined;
+            if (!project) fail('NOT_FOUND', 'Project not found.');
+            if (project.version !== command.expectedVersion) fail('STALE_VERSION', 'The project settings changed. Reload before saving.');
+            if (this.store.db.prepare("SELECT r.id FROM agent_runs r JOIN tasks t ON t.id=r.task_id WHERE t.project_id=? AND r.status IN ('queued','starting','running','waiting_permission','stopping')").get(project.id)) fail('CONFLICT', 'Stop active or queued runs before changing project settings.');
+            const configuration = repositoryConfigurationSchema.parse(command.configuration), local = localProjectSettingsSchema.parse(command.local);
+            if (local.executionEnabled && (!local.trustedRepository || !configuration.verification.commands.length)) fail('POLICY_DENIED', 'Trust the repository and configure verification before enabling implementation.');
+            const stored = JSON.parse(project.config_json), configDigest = digest(configuration);
+            written = writeRepositoryConfiguration(project.repo_path, command.expectedDigest, configuration);
+            if (stored.repositoryConfigDigest !== configDigest) {
+              this.store.db.prepare("UPDATE validation_runs SET status='stale',reason='Repository configuration changed.' WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND status='passed'").run(project.id);
+              for (const task of this.store.db.prepare("SELECT * FROM tasks WHERE project_id=? AND status IN ('CODE_REVIEW','FINAL_REVIEW','ACCEPTED')").all(project.id) as import('../../../packages/contracts/src/index.js').Task[]) this.builds.invalidate(task, 'Repository configuration changed; initialize, revalidate and review again.');
+            }
+            this.store.db.prepare('UPDATE projects SET config_json=?,version=version+1,updated_at=? WHERE id=?').run(JSON.stringify({ ...stored, ...local, validationCommands: verificationCommands(configuration), repositoryConfigDigest: configDigest }), now, project.id);
+            this.store.event('project.configured', project.id, null, { version: project.version + 1, repositoryConfigDigest: configDigest });
+            return { id: project.id, digest: written.digest };
+          });
+        } catch (error) { if (written) written.rollback(); throw error; }
+      }
       case 'project.configure': return this.store.transaction(() => {
         const project = this.store.db.prepare('SELECT * FROM projects WHERE id=?').get(command.projectId) as Project | undefined;
         if (!project) fail('NOT_FOUND', 'Project not found.');
         if (project.version !== command.expectedVersion) fail('STALE_VERSION', 'The project settings changed. Refresh before saving.');
         if (this.store.db.prepare("SELECT r.id FROM agent_runs r JOIN tasks t ON t.id=r.task_id WHERE t.project_id=? AND r.status IN ('queued','starting','running','waiting_permission','stopping')").get(project.id)) fail('CONFLICT', 'Stop the project’s active or queued runs before changing execution settings.');
+        if (repositoryConfigurationState(project).exists || JSON.parse(project.config_json).repositoryConfigDigest) fail('POLICY_DENIED', 'Use repository-backed project settings to update .kulumin.yml.');
         const config = executionConfigSchema.parse(command.config);
         if (config.executionEnabled && !config.trustedRepository) fail('POLICY_DENIED', 'Execution must remain disabled for untrusted repositories.');
         if (new Set(config.validationCommands.map(check => check.name)).size !== config.validationCommands.length) fail('INVALID_INPUT', 'Validation command names must be unique.');
@@ -153,6 +193,14 @@ export class FactoryService {
       case 'request.duplicate': return this.store.transaction(() => {
         const request = this.getRequest(command.requestId, command.expectedVersion);
         return this.execute({ type: 'request.create', projectId: request.project_id, title: request.title, body: request.body, kind: request.type as 'feature', priority: request.priority as 'normal', acceptanceCriteria: JSON.parse(request.acceptance_criteria_json) });
+      });
+      case 'request.startTask': return this.store.transaction(() => {
+        const request = this.getRequest(command.requestId, command.expectedVersion);
+        if (request.status === 'archived') fail('INVALID_TRANSITION', 'Restore the request before starting a task.');
+        let task = this.store.db.prepare('SELECT * FROM tasks WHERE request_id=?').get(request.id) as import('../../../packages/contracts/src/index.js').Task | undefined;
+        if (task && task.status !== 'INBOX') fail('CONFLICT', 'This request already has a started task. Open its issue to follow progress or retry.');
+        task ??= this.execute({ type: 'task.createFromRequest', requestId: request.id }) as import('../../../packages/contracts/src/index.js').Task;
+        return this.execute({ type: 'task.assign', taskId: task.id, expectedVersion: task.version, provider: command.provider, model: command.model });
       });
       case 'task.createFromRequest': return this.store.transaction(() => {
         const request = this.store.db.prepare('SELECT * FROM requests WHERE id=?').get(command.requestId) as Request | undefined;

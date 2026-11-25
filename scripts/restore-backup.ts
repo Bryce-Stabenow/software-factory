@@ -14,7 +14,7 @@ export async function restoreBackup(sourcePath: string, destinationPath: string)
   try {
     if ((input.pragma('quick_check') as { quick_check: string }[]).some(row => row.quick_check !== 'ok') || (input.pragma('foreign_key_check') as unknown[]).length) throw new Error('Backup integrity checks failed.');
     const version = (input.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number }).version;
-    if (!version || version > 6) throw new Error('This backup requires a different version of Kulumin.');
+    if (!version || version > 7) throw new Error('This backup requires a different version of Kulumin.');
     mkdirSync(destination, { recursive: true, mode: 0o700 });
     release = acquireRuntimeLock(destination);
     // Recheck after taking ownership, including SQLite sidecars left by a partial restore.

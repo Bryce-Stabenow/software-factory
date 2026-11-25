@@ -10,7 +10,7 @@ lines.on('line', line => {
   if (frame.method === 'initialize') send({ id: frame.id, result: { userAgent: 'validation-fixture' } });
   if (frame.method === 'config/read') send({ id: frame.id, result: { config: { mcp_servers: {}, features: {} } } });
   if (frame.method === 'command/exec') {
-    assert.equal(frame.params.sandboxPolicy.type, 'workspaceWrite'); assert.equal(frame.params.sandboxPolicy.networkAccess, false);
+    assert.equal(frame.params.sandboxPolicy.type, 'workspaceWrite'); assert.equal(frame.params.sandboxPolicy.networkAccess, mode === 'initialization');
     assert.equal(frame.params.sandboxPolicy.excludeSlashTmp, true); assert.equal(frame.params.sandboxPolicy.excludeTmpdirEnvVar, true);
     assert.equal(frame.params.sandboxPolicy.writableRoots.length, 2); assert.equal(frame.params.sandboxPolicy.writableRoots[0], frame.params.cwd);
     assert.equal(frame.params.env.OPENAI_API_KEY, undefined); assert.equal(frame.params.streamStdoutStderr, true);

@@ -66,7 +66,7 @@ test('support diagnostics contain no request content, paths, source, credentials
   const h = setup(t); const request = h.create(), task = h.call<Task>({ type: 'task.createFromRequest', requestId: request.id });
   h.store.db.prepare("INSERT INTO agent_runs(id,task_id,stage,provider,status,attempt,started_at,error_code,summary) VALUES (?,?,'plan','codex','failed',1,?,'PROVIDER_ERROR',?)").run(randomUUID(), task.id, new Date().toISOString(), 'password=hidden private transcript');
   const report = h.call<Diagnostics>({ type: 'diagnostics.get' });
-  assert.equal(report.storage.integrity, 'ok'); assert.equal(report.storage.schemaVersion, 6); assert.equal(report.counts.openRequests, 1); assert.equal(report.recentErrors[0].code, 'PROVIDER_ERROR');
+  assert.equal(report.storage.integrity, 'ok'); assert.equal(report.storage.schemaVersion, 7); assert.equal(report.counts.openRequests, 1); assert.equal(report.recentErrors[0].code, 'PROVIDER_ERROR');
   const serialized = JSON.stringify(report); assert.doesNotMatch(serialized, /Private|private-repo|DB_PASSWORD|do-not-export|hidden|transcript|\/Users\//);
   const exported = h.call<StoredExport>({ type: 'diagnostics.export' });
   const bytes = readFileSync(exported.path); assert.equal(createHash('sha256').update(bytes).digest('hex'), exported.sha256);
@@ -91,8 +91,43 @@ test('migration 6 preserves pre-existing requests and task request versions acro
   const h = setup(t); const request = h.create(); h.call({ type: 'task.createFromRequest', requestId: request.id });
   // Reconstruct the exact pre-migration shape in a separate fixture, preserving historical tables.
   const path = join(h.directory, 'legacy.db'); h.store.db.exec(`VACUUM INTO '${path.replaceAll("'", "''")}'`);
-  const legacy = new Database(path); legacy.exec('DROP TRIGGER immutable_request_revision_update;DROP TRIGGER immutable_request_revision_delete;DROP TABLE request_revisions;DELETE FROM schema_migrations WHERE version=6'); legacy.close();
+  const legacy = new Database(path); legacy.exec('DROP TRIGGER immutable_request_revision_update;DROP TRIGGER immutable_request_revision_delete;DROP TABLE request_revisions;DROP TABLE initialization_runs;ALTER TABLE agent_runs DROP COLUMN implementation_started;DELETE FROM schema_migrations WHERE version>=6'); legacy.close();
   const migrated = new Store(path); const snapshot = migrated.snapshot();
   assert.equal(snapshot.requestRevisions.length, 1); assert.equal(migrated.requestForTask(snapshot.tasks[0]).title, 'Private feature title');
   assert.equal(migrated.db.pragma('foreign_key_check').length, 0); migrated.close();
+});
+
+test('starting a saved request creates one task and plans immediately without approving execution', t => {
+  const h = setup(t), { id } = h.create();
+  assert.equal(h.snapshot().tasks.length, 0);
+  const task = h.call<Task>({ type: 'request.startTask', requestId: id, expectedVersion: 1, provider: 'fake' });
+  assert.equal(task.status, 'PLAN_REVIEW');
+  assert.equal(task.approved_plan_revision_id, null);
+  assert.equal(h.snapshot().workspaces.length, 0);
+  const duplicate = h.service.dispatch({ type: 'request.startTask', requestId: id, expectedVersion: 1, provider: 'fake' });
+  assert.equal(duplicate.ok, false);
+  assert.equal(h.snapshot().tasks.length, 1);
+  assert.equal(h.snapshot().plans.length, 1);
+});
+test('starting requests rejects stale or archived inputs and reuses an existing unstarted task', t => {
+  const h = setup(t), { id } = h.create();
+  const request = h.snapshot().requests[0]; h.update(request);
+  assert.equal(h.service.dispatch({ type: 'request.startTask', requestId: id, expectedVersion: 1, provider: 'fake' }).ok, false);
+  assert.equal(h.snapshot().tasks.length, 0);
+  const archived = h.call<Request>({ type: 'request.archive', requestId: id, expectedVersion: 2, archived: true });
+  assert.equal(h.service.dispatch({ type: 'request.startTask', requestId: id, expectedVersion: archived.version, provider: 'fake' }).ok, false);
+  const restored = h.call<Request>({ type: 'request.archive', requestId: id, expectedVersion: archived.version, archived: false });
+  const inbox = h.call<Task>({ type: 'task.createFromRequest', requestId: id });
+  const planned = h.call<Task>({ type: 'request.startTask', requestId: id, expectedVersion: restored.version, provider: 'fake' });
+  assert.equal(planned.id, inbox.id); assert.equal(planned.status, 'PLAN_REVIEW');
+  assert.equal(h.snapshot().tasks.length, 1);
+});
+test('a planning enqueue failure rolls back task creation while preserving the saved request', t => {
+  const h = setup(t), { id } = h.create();
+  h.service.planning.enqueue = () => { throw new Error('Fixture enqueue failure'); };
+  const result = h.service.dispatch({ type: 'request.startTask', requestId: id, expectedVersion: 1, provider: 'codex' });
+  assert.equal(result.ok, false);
+  assert.equal(h.snapshot().requests.length, 1);
+  assert.equal(h.snapshot().tasks.length, 0);
+  assert.equal(h.snapshot().events.filter(event => event.type === 'task.created').length, 0);
 });

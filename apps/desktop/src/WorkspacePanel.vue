@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import type { ValidationRun, Workspace, WorkspaceDetails } from '../../../packages/contracts/src/index';
+import type { InitializationRun, ValidationRun, Workspace, WorkspaceDetails } from '../../../packages/contracts/src/index';
 import StatusBadge from './StatusBadge.vue';
 import DiffViewer from './DiffViewer.vue';
-defineProps<{ workspace: Workspace; details: WorkspaceDetails | null; checks: ValidationRun[]; status: string; busy: boolean; error: string }>();
-const emit = defineEmits<{ inspect: []; open: []; resume: [stage: 'implement' | 'validate' | 'review']; copy: [text: string] }>();
+defineProps<{ workspace: Workspace; details: WorkspaceDetails | null; checks: ValidationRun[]; initializations: InitializationRun[]; status: string; busy: boolean; error: string }>();
+const emit = defineEmits<{ inspect: []; open: []; resume: [stage: 'implement' | 'validate' | 'review' | 'initialize']; copy: [text: string] }>();
 </script>
 <template>
   <section class="workspace-panel">
@@ -14,9 +14,12 @@ const emit = defineEmits<{ inspect: []; open: []; resume: [stage: 'implement' | 
     <UAlert v-if="error" color="error" variant="subtle" :description="error" class="mb-4" />
     <template v-if="details">
       <p class="field-note mb-4"><UIcon :name="details.dirty ? 'i-lucide-circle-dashed' : 'i-lucide-check'" /> {{ details.dirty ? 'Uncommitted changes are preserved in this worktree.' : 'The worktree is clean and committed.' }}</p>
-      <div v-if="['BLOCKED','FAILED','CANCELLED'].includes(status)" class="next-step-card mb-5"><h3>Recover preserved work</h3><p>Continue from the exact HEAD and contents shown by the last inspection. Existing edits stay in the worktree.</p><div class="action-row"><UButton size="sm" :disabled="busy" @click="emit('resume','implement')">Resume implementation</UButton><UButton color="neutral" variant="outline" size="sm" :disabled="busy || details.dirty" @click="emit('resume','validate')">Revalidate &amp; review</UButton></div></div>
+      <div v-if="['BLOCKED','FAILED','CANCELLED'].includes(status)" class="next-step-card mb-5"><h3>Recover preserved work</h3><p>Continue from the exact HEAD and contents shown by the last inspection. Existing edits stay in the worktree.</p><div class="action-row"><UButton size="sm" :disabled="busy" @click="emit('resume','implement')">Resume implementation</UButton><UButton color="neutral" variant="outline" size="sm" :disabled="busy || details.dirty" @click="emit('resume','validate')">Revalidate &amp; review</UButton><UButton color="neutral" variant="outline" size="sm" :disabled="busy || details.dirty" @click="emit('resume','initialize')">Initialize &amp; revalidate</UButton></div></div>
       <UCollapsible class="evidence-disclosure"><UButton color="neutral" variant="ghost" trailing-icon="i-lucide-chevron-down" class="disclosure-trigger">Changed files <span>{{ details.changedFiles.length }}</span></UButton><template #content><div class="file-list"><span v-for="file in details.changedFiles" :key="file"><UIcon name="i-lucide-file-code" />{{ file }}</span></div><p v-if="details.truncated" class="field-note p-3">Diff capture is truncated. Open the worktree for the full changes.</p><DiffViewer :diff="details.diff" /></template></UCollapsible>
     </template>
+    <div class="section-title mt-7"><h3>Worktree initialization</h3><span class="section-caption">{{ initializations.length }} attempts</span></div>
+    <p v-if="!initializations.length" class="field-note">No initialization recorded. Configure setup commands in the project's .kulumin.yml for new worktrees.</p>
+    <article v-for="run in initializations.slice().reverse()" :key="run.id" class="check-card"><div class="check-card-heading"><UIcon name="i-lucide-package" /><strong>Initialize worktree</strong><StatusBadge :status="run.status" /></div><p v-if="run.reason">{{ run.reason }}</p><UCollapsible class="evidence-disclosure"><UButton color="neutral" variant="ghost" trailing-icon="i-lucide-chevron-down" class="disclosure-trigger">Setup log</UButton><template #content><pre class="log-view">{{ run.log_text || 'No output captured.' }}</pre></template></UCollapsible></article>
     <div class="section-title mt-7"><h3>Validation evidence</h3><span class="section-caption">{{ checks.length }} checks</span></div>
     <div v-if="!checks.length" class="compact-empty surface"><UIcon name="i-lucide-list-checks" /><div><strong>Checks not run</strong><p>{{ status === 'BUILDING' ? 'Checks start after the implementation commit.' : 'No check results have been captured yet.' }}</p></div></div>
     <article v-for="check in checks.slice().reverse()" :key="check.id" class="check-card"><div class="check-card-heading"><UIcon name="i-lucide-terminal" /><strong>{{ check.name }}</strong><StatusBadge :status="check.status" /></div><code class="check-command">{{ JSON.parse(check.argv_json).join(' ') }}</code><small class="check-commit">{{ check.commit_sha }} · exit {{ check.exit_code ?? 'pending' }}</small><p v-if="check.reason">{{ check.reason }}</p><UCollapsible class="evidence-disclosure"><UButton color="neutral" variant="ghost" trailing-icon="i-lucide-chevron-down" class="disclosure-trigger">Captured log</UButton><template #content><pre class="log-view">{{ check.log_text || 'No output captured.' }}</pre></template></UCollapsible></article>

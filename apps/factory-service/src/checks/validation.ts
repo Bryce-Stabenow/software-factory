@@ -8,12 +8,26 @@ import { redact } from '../agents/snapshot.js';
 
 export interface ValidationInput {
   cwd: string; temporaryDirectory: string; command: ExecutionConfig['validationCommands'][number];
+  networkAccess?: boolean;
   processId: string; signal: AbortSignal; onProcess: (pid: number) => void; onOutput: (log: string) => void;
 }
 export interface ValidationAdapter { run(input: ValidationInput): Promise<{ exitCode: number; log: string }> }
 export const redactLog = (value: string) => redact(value)
   .replace(/(\b[A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|API_KEY)[A-Z0-9_]*\s*[:=]\s*["']?)[^\s"',;]+/gi, '$1[REDACTED]')
   .replace(/(\bAuthorization\s*:\s*Bearer\s+)[^\s]+/gi, '$1[REDACTED]');
+
+// These failures happen before a check can exercise source. Repairing code cannot
+// provision a missing toolchain, and must not consume the plan's repair budget.
+export function missingValidationDependency(log: string): boolean {
+  return /(?:(?:^|\n)(?:(?:\/[^\s:]+\/)?(?:sh|bash|zsh|env):[^\n]*(?:not found|No such file or directory)|[^\n:]+: command not found)(?:\r?\n|$)|Cannot find package ['"][^.'"/][^'"\n]*['"]|Cannot find module ['"][^'"\n]*node_modules\/[^'"\n]*['"]|ERR_MODULE_NOT_FOUND[^\n]*package)/i.test(log);
+}
+export const validationSetupMessage = 'A validation command or dependency is missing. Prepare the task worktree (for npm projects, run npm ci --include=dev there), then use Revalidate & review. No code repair was attempted for this setup failure.';
+
+export function validationEnvironmentFailure(log: string): string | null {
+  if (missingValidationDependency(log)) return validationSetupMessage;
+  if (/Error: listen (?:EPERM|EACCES)\b/.test(log)) return 'The validation sandbox blocked the check’s IPC socket. For tsx tests use node --import tsx --test instead of the tsx CLI. Configure a sandbox-compatible check, then revalidate. No code repair or permission expansion was attempted.';
+  return null;
+}
 
 export class CodexValidationRunner implements ValidationAdapter {
   constructor(private binary = process.env.FACTORY_CODEX_BINARY ?? 'codex', private args = serverArgs) {}
@@ -53,7 +67,7 @@ export class CodexValidationRunner implements ValidationAdapter {
       const result = await rpc.request('command/exec', {
         command: input.command.argv, cwd: input.cwd, processId: input.processId,
         timeoutMs: input.command.timeoutMs, outputBytesCap: 64000, streamStdoutStderr: true,
-        sandboxPolicy: { type: 'workspaceWrite', writableRoots: [input.cwd, input.temporaryDirectory], networkAccess: false, excludeSlashTmp: true, excludeTmpdirEnvVar: true },
+        sandboxPolicy: { type: 'workspaceWrite', writableRoots: [input.cwd, input.temporaryDirectory], networkAccess: input.networkAccess === true, excludeSlashTmp: true, excludeTmpdirEnvVar: true },
         env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, TMPDIR: input.temporaryDirectory, CI: '1', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', NPM_CONFIG_USERCONFIG: '/dev/null', NPM_CONFIG_CACHE: join(input.temporaryDirectory, 'npm-cache') },
       }, input.command.timeoutMs + 4000);
       signal.throwIfAborted();

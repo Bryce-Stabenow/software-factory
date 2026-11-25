@@ -1,3 +1,4 @@
+import { resolveExecutionConfiguration, verificationDigest } from '../configuration/repository.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { EvidenceBundle, ErrorCode, Task, TaskStatus } from '../../../../packages/contracts/src/index.js';
 import { planSchema } from '../../../../packages/contracts/src/index.js';
@@ -30,6 +31,7 @@ export function assertTransition(from: TaskStatus, to: TaskStatus) {
 }
 
 export class Workflow {
+  verifyMerged?: (task: Task) => void;
   verifyFinalEvidence?: (task: Task) => EvidenceBundle;
   constructor(private store: Store) {}
   getTask(id: string, expectedVersion?: number): Task {
@@ -51,18 +53,21 @@ export class Workflow {
       assertTransition(task.status, next);
       if (['QUEUED_FOR_BUILD','BUILDING','REPAIRING','FINAL_REVIEW','ACCEPTED'].includes(next)) this.assertApproved(task);
       if (next === 'CODE_REVIEW') {
-        const workspace = this.store.db.prepare('SELECT head_sha FROM workspaces WHERE task_id=?').get(id) as { head_sha: string | null } | undefined;
-        const project = this.store.db.prepare('SELECT config_json FROM projects WHERE id=?').get(task.project_id) as { config_json: string };
-        const config = JSON.parse(project.config_json);
+        const workspace = this.store.db.prepare('SELECT head_sha,path FROM workspaces WHERE task_id=?').get(id) as { head_sha: string | null; path: string } | undefined;
+        const project = this.store.db.prepare('SELECT * FROM projects WHERE id=?').get(task.project_id) as import('../../../../packages/contracts/src/index.js').Project;
+        const config = resolveExecutionConfiguration(project, workspace?.path);
         const commands = config.validationCommands ?? [];
         const checks = this.store.db.prepare("SELECT name,config_digest FROM validation_runs WHERE task_id=? AND commit_sha=? AND status='passed'").all(id, workspace?.head_sha ?? '') as { name: string; config_digest: string }[];
-        if (!workspace?.head_sha || !commands.length || !commands.every((command: { name: string }) => checks.some(check => check.name === command.name && check.config_digest === digest(commands)))) fail('STALE_EVIDENCE', 'Current-commit validation evidence is required before code review.');
+        if (!workspace?.head_sha || !commands.length || !commands.every((command: { name: string }) => checks.some(check => check.name === command.name && check.config_digest === verificationDigest(config)))) fail('STALE_EVIDENCE', 'Current-commit validation evidence is required before code review.');
       }
       if (next === 'FINAL_REVIEW' || next === 'ACCEPTED') {
         const evidence = this.verifyFinalEvidence?.(task) ?? fail('STALE_EVIDENCE', 'Verified current-commit evidence is required.');
         if (next === 'ACCEPTED' && !this.store.db.prepare("SELECT id FROM approvals WHERE task_id=? AND gate='final' AND action='accept' AND artifact_id=? AND artifact_digest=? AND commit_sha=? AND actor='local-human'").get(task.id, evidence.id, evidence.sha256_digest, evidence.commit_sha)) fail('APPROVAL_REQUIRED', 'A durable human acceptance of this exact evidence and commit is required.');
       }
-      if (next === 'MERGED') fail('POLICY_DENIED', 'Merging requires a separately authorized future feature.');
+      if (next === 'MERGED') {
+        if (!this.verifyMerged) fail('POLICY_DENIED', 'Merging requires a separately authorized delivery operation.');
+        this.verifyMerged(task);
+      }
       if (['FAILED', 'BLOCKED', 'REJECTED', 'CANCELLED'].includes(next) && (!reason?.trim() || !recovery?.trim())) fail('INVALID_INPUT', 'A visible reason and recovery action are required.');
       const result = this.store.db.prepare('UPDATE tasks SET status=?, version=version+1, reason=?, recovery_action=?, updated_at=? WHERE id=? AND version=?').run(next, reason ?? null, recovery ?? null, new Date().toISOString(), id, expectedVersion);
       if (result.changes !== 1) fail('STALE_VERSION', 'Task changed.');

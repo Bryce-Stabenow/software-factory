@@ -16,7 +16,7 @@ impl Bridge {
             .env("FACTORY_DATA_DIR", &config.data).env("FACTORY_PACKAGED", if config.packaged { "1" } else { "0" })
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         if !config.packaged { launch.env("FACTORY_DEMO", "1"); }
-        for key in ["CODEX_HOME", "FACTORY_CODEX_BINARY", "FACTORY_WORKSPACE_ROOT", "TMPDIR", "LANG", "USER", "LOGNAME"] {
+        for key in ["CODEX_HOME", "FACTORY_CODEX_BINARY", "FACTORY_WORKSPACE_ROOT", "TMPDIR", "LANG", "USER", "LOGNAME", "SSH_AUTH_SOCK"] {
             if let Ok(value) = std::env::var(key) { launch.env(key, value); }
         }
         let mut child = launch.spawn().map_err(|_| "The bundled factory service could not start. Reinstall the app or check its runtime resources.")?;
