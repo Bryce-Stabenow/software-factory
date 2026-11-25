@@ -26,4 +26,4 @@ Request starts (including saved requests) and INBOX assignments resolve omitted 
 
 Planning retry accepts only planningModel: omission retains the captured choice, null resets to catalog default, and an ID replaces it. Actual model reporting remains on each agent run. Catalog default resolves at stage execution time. Missing catalog entries and catalog failures retain selected IDs; they never silently substitute models. Simulation still cannot authorize real execution.
 
-The shared model command and policy field is replaced directly. Existing development data is not migrated or normalized.
+The shared model command and policy field is replaced directly. Existing projects missing per-stage model selections use catalog defaults when settings are loaded or planning starts; explicit saved choices are preserved. No database migration is required.

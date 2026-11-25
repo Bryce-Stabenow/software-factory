@@ -215,7 +215,7 @@ export class FactoryService {
       case 'task.assign': return this.store.transaction(() => {
         const task = this.workflow.getTask(command.taskId);
         const project = this.store.db.prepare('SELECT * FROM projects WHERE id=?').get(task.project_id) as Project;
-        const policy = resolveAgentDefaults(agentDefaultsSchema.parse(JSON.parse(project.config_json)), command);
+        const policy = resolveAgentDefaults(agentDefaultsSchema.parse({ ...defaultAgentSettings, ...JSON.parse(project.config_json) }), command);
         this.workflow.transition(command.taskId, command.expectedVersion, 'PLANNING', 'task.assigned');
         this.store.db.prepare('UPDATE tasks SET provider_policy_json=? WHERE id=?').run(JSON.stringify(taskPolicySchema.parse({ ...JSON.parse(task.provider_policy_json), ...policy })), task.id);
         return policy.provider === 'codex' ? this.planning.enqueue(task.id) : this.plan(task.id);

@@ -158,3 +158,20 @@ test('project defaults persist and both start paths capture mixed overrides', t 
   assert.equal(readFileSync(join(h.repo, '.kulumin.yml'), 'utf8'), before);
   assert.equal(JSON.parse(h.store.task(started.id)!.provider_policy_json).planningModel, 'plan-id');
 });
+
+
+test('older projects can open settings and start planning without stored model selections', t => {
+  const h = harness(t);
+  const project = h.call<Snapshot>({ type: 'snapshot' }).projects[0];
+  const config = JSON.parse(project.config_json);
+  delete config.planningModel;
+  delete config.implementationModel;
+  delete config.reviewModel;
+  config.provider = 'fake';
+  h.store.db.prepare('UPDATE projects SET config_json=? WHERE id=?').run(JSON.stringify(config), project.id);
+  const state = h.call<import('../packages/contracts/src/index.js').RepositoryConfigurationState>({ type: 'project.configuration.get', projectId: project.id });
+  for (const field of ['planningModel', 'implementationModel', 'reviewModel'] as const) assert.equal(state.local[field], null);
+  const task = h.call<Task>({ type: 'task.assign', taskId: h.task.id, expectedVersion: h.task.version });
+  const policy = JSON.parse(task.provider_policy_json);
+  for (const field of ['planningModel', 'implementationModel', 'reviewModel']) assert.equal(policy[field], null);
+});

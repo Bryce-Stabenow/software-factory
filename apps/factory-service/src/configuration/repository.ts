@@ -2,7 +2,7 @@ import { constants, closeSync, existsSync, fstatSync, fsyncSync, lstatSync, open
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { parseDocument } from 'yaml';
-import { executionConfigSchema, localProjectSettingsSchema, repositoryConfigurationSchema, type ExecutionConfig, type Project, type RepositoryConfiguration, type RepositoryConfigurationState } from '../../../../packages/contracts/src/index.js';
+import { defaultAgentSettings, executionConfigSchema, localProjectSettingsSchema, repositoryConfigurationSchema, type ExecutionConfig, type Project, type RepositoryConfiguration, type RepositoryConfigurationState } from '../../../../packages/contracts/src/index.js';
 import { digest, fail } from '../workflows/engine.js';
 import { git } from '../git/workspaces.js';
 
@@ -48,7 +48,7 @@ export function committedConfigurationMatches(root: string, ref: string, fileDig
 }
 export function repositoryConfigurationState(project: Project): RepositoryConfigurationState {
   const stored = JSON.parse(project.config_json);
-  const local = localProjectSettingsSchema.parse({ executionEnabled: false, trustedRepository: false, initializationNetworkAllowed: false, ...stored });
+  const local = localProjectSettingsSchema.parse({ executionEnabled: false, trustedRepository: false, initializationNetworkAllowed: false, ...defaultAgentSettings, ...stored });
   const state: RepositoryConfigurationState = { path: join(project.repo_path, configurationFilename), exists: false, digest: null, configuration: null, committed: false, error: null, authorized: false, local, legacyVerification: stored.validationCommands ?? [] };
   try {
     const text = readText(project.repo_path);
