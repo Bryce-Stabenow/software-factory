@@ -71,3 +71,21 @@ test('keeps metadata and hunk boundaries to one side-by-side row', () => {
   ]);
   assert.ok(fullWidth.every(pair => pair.next === null));
 });
+
+test('parses CRLF captures and keeps incomplete final hunks visible', () => {
+  const files = parseDiff('diff --git a/partial.ts b/partial.ts\r\n--- a/partial.ts\r\n+++ b/partial.ts\r\n@@ -4 +4 @@\r\n-old');
+  assert.equal(files[0].path, 'partial.ts');
+  assert.deepEqual(files[0].lines.at(-1), {
+    text: '-old',
+    kind: 'remove',
+    oldLine: 4,
+    newLine: null,
+  });
+});
+
+test('distinguishes a deleted file from an uncaptured changed file', () => {
+  const files = parseDiff('diff --git a/gone.ts b/gone.ts\n--- a/gone.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-old', ['gone.ts', 'untracked.ts']);
+  assert.equal(files[0].path, 'gone.ts');
+  assert.equal(files[0].unavailable, false);
+  assert.equal(files[1].unavailable, true);
+});

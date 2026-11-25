@@ -226,7 +226,7 @@ async function reviewFinal(action: 'accept' | 'request_changes' | 'reject', feed
   if (result && action === 'accept') detailTab.value = 'overview';
 }
 async function copyText(text: string) { try { await navigator.clipboard.writeText(text); toast.add({ title: 'Copied to clipboard', icon: 'i-lucide-check', color: 'success' }); } catch { error.value = 'Clipboard access is unavailable. Select and copy the branch text from the task worktree section.'; } }
-watch(selectedId, () => { feedback.value = ''; questionAnswers.value = {}; diffSource.value = 'workspace'; diffFile.value = null; });
+watch(selectedId, () => { feedback.value = ''; questionAnswers.value = {}; detailTab.value = 'overview'; diffSource.value = 'workspace'; diffFile.value = null; workspaceDetails.value = null; workspaceError.value = ''; });
 watch(diffChangedFiles, files => { if (diffFile.value && !files.includes(diffFile.value)) diffFile.value = null; });
 function openDiff(source: 'workspace' | 'evidence', file?: string) { diffSource.value = source; diffFile.value = file ?? null; detailTab.value = 'diff'; }
 watch([selectedId, () => selected.value?.version, () => selectedWorkspace.value?.head_sha, () => selectedWorkspace.value?.cleanup_status], () => { workspaceDetails.value = null; void inspectWorkspace(); });
