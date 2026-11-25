@@ -1,0 +1,55 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { parseDiff, reconcileSelectedFile, sideBySide } from '../apps/desktop/src/diff-view.js';
+
+const patch = `diff --git a/one.ts b/one.ts
+index 1..2 100644
+--- a/one.ts
++++ b/one.ts
+@@ -2,2 +2,3 @@
+ old
+-old value
++new value
++another
+diff --git a/two.txt b/two.txt
+new file mode 100644
+--- /dev/null
++++ b/two.txt
+@@ -0,0 +1 @@
++hello
+\\ No newline at end of file`;
+
+test('parses files, hunks, and preserves old and new line numbers', () => {
+  const files = parseDiff(patch);
+  assert.deepEqual(files.map(file => file.path), ['one.ts', 'two.txt']);
+  const changed = files[0].lines.filter(line => line.kind === 'remove' || line.kind === 'add');
+  assert.deepEqual(changed.map(line => [line.kind, line.oldLine, line.newLine]), [['remove', 3, null], ['add', null, 3], ['add', null, 4]]);
+});
+
+test('reconciles uncaptured and binary changes without treating them as empty diffs', () => {
+  const files = parseDiff('diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ', ['logo.png', 'untracked.txt']);
+  assert.equal(files[0].binary, true);
+  assert.equal(files[1].unavailable, true);
+});
+
+test('side-by-side pairs unequal replacement blocks and leaves blank cells', () => {
+  const lines = parseDiff(patch)[0].lines;
+  const pairs = sideBySide(lines).filter(pair => pair.old?.kind === 'remove' || pair.next?.kind === 'add');
+  assert.equal(pairs.length, 2);
+  assert.equal(pairs[0].old?.text, '-old value');
+  assert.equal(pairs[0].next?.text, '+new value');
+  assert.equal(pairs[1].old, null);
+  assert.equal(pairs[1].next?.text, '+another');
+});
+
+test('keeps a valid selected file and falls back after a refresh', () => {
+  const files = parseDiff(patch);
+  assert.equal(reconcileSelectedFile(files, 'two.txt'), 'two.txt');
+  assert.equal(reconcileSelectedFile(files, 'gone.txt'), 'one.ts');
+  assert.equal(reconcileSelectedFile([], 'two.txt'), null);
+});
+
+test('reads quoted Git paths', () => {
+  const files = parseDiff('diff --git "a/file name.ts" "b/file name.ts"\n--- "a/file name.ts"\n+++ "b/file name.ts"\n@@ -1 +1 @@\n-old\n+new');
+  assert.equal(files[0].path, 'file name.ts');
+});
