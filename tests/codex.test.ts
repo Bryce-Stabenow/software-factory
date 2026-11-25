@@ -51,7 +51,7 @@ for (const [mode, expected] of [['invalid', 'INVALID_PLAN'], ['no-read', 'INVALI
     assert.ok(['FAILED', 'BLOCKED'].includes(snapshot.tasks[0].status));
     assert.equal(snapshot.runs[0].error_code, expected);
     assert.equal(snapshot.plans.length, 0); assert.equal(snapshot.approvals.length, 0);
-    assert.doesNotMatch(JSON.stringify(snapshot), /[REDACTED]|private-email/);
+    assert.doesNotMatch(JSON.stringify(snapshot), /\[REDACTED\]|private-email/);
     if (mode === 'permission') assert.equal((h.store.db.prepare('SELECT status FROM permission_requests').get() as { status: string }).status, 'denied');
   });
 }
