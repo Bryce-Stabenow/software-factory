@@ -6,7 +6,7 @@ A local, single-user software factory with deliberate human approval gates, buil
 
 The app now supports **real Codex planning → exact plan approval → implementation in an isolated Git worktree → a local commit → configured validation → independent review → final human acceptance**. Progress, decisions, worktrees, checks, and recoverable failures persist in SQLite. A fake planner remains available for simulation and cannot authorize real execution.
 
-Passing checks starts a fresh read-only reviewer. Test failures or actionable findings trigger up to three repairs, each followed by fresh checks and review. A passing independent review produces `FINAL_REVIEW`; only your decision can mark the exact reviewed commit `ACCEPTED`. Nothing is automatically merged, pushed, or deployed.
+Passing checks starts a fresh read-only reviewer. Test failures or actionable findings trigger up to three repairs, each followed by fresh checks and review. A passing independent review produces `FINAL_REVIEW`; only your decision can mark the exact reviewed commit `ACCEPTED`. After acceptance, use the delivery controls in the task overview to merge into the project’s default branch, push the accepted task branch to a configured remote, or push the default branch after merging. Merge requires a clean registered checkout on the default branch and checks for conflicts before changing files. Push uses your existing Git credentials and never force-pushes. Delivery actions and commit IDs are recorded in Activity. Nothing is automatically merged, pushed, or deployed.
 
 ## Native app for daily use
 

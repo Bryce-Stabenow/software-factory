@@ -14,6 +14,7 @@ import type { ProviderHealth, Question } from '../../../packages/contracts/src/i
 import { resolve } from 'node:path';
 import { BuildJobs, executionConfig } from './agents/build-jobs.js';
 import { defaultWorkspaceRoot, WorkspaceManager } from './git/workspaces.js';
+import { Delivery } from './git/delivery.js';
 import { RunPool } from './scheduler/run-pool.js';
 import type { ValidationAdapter } from './checks/validation.js';
 import { childEnvironment, CodexError } from './agents/rpc.js';
@@ -24,6 +25,7 @@ export class FactoryService {
   readonly planning: PlanningJobs;
   readonly builds: BuildJobs;
   readonly operations: Operations;
+  readonly delivery: Delivery;
   private codexHealth: ProviderHealth = { id: 'codex', available: false, authenticated: false, message: 'Not checked. Check the local Codex CLI connection in Settings.' };
   constructor(readonly store: Store, options: { planner?: PlannerAdapter; implementer?: ImplementationAdapter; validator?: ValidationAdapter; reviewer?: ReviewAdapter; dataDir?: string; workspaceRoot?: string } = {}) {
     this.workflow = new Workflow(store);
@@ -31,10 +33,16 @@ export class FactoryService {
     this.operations = new Operations(store, dataDir);
     this.planning = new PlanningJobs(store, this.workflow, dataDir, options.planner, pool);
     this.builds = new BuildJobs(store, this.workflow, new WorkspaceManager(store, options.workspaceRoot ?? defaultWorkspaceRoot(dataDir)), dataDir, pool, options.implementer, options.validator, options.reviewer);
+    this.delivery = new Delivery(store, this.workflow, this.builds.workspaces);
+    this.workflow.verifyMerged = task => this.delivery.verifyMerged(task);
     this.workflow.verifyFinalEvidence = task => this.builds.evidence.verify(task);
   }
   async handle(input: unknown): Promise<Response> {
     const command = commandSchema.safeParse(input);
+    if (command.success && command.data.type === 'delivery.push') {
+      try { return { ok: true, data: await this.delivery.push(command.data) }; }
+      catch (error) { return { ok: false, error: { code: error instanceof FactoryError ? error.code : 'INTERNAL_ERROR', message: error instanceof FactoryError ? error.message : 'Push failed. Check remote access and Git authentication, then retry.' } }; }
+    }
     if (command.success && command.data.type === 'backup.create') {
       try { return { ok: true, data: await this.operations.backup() }; }
       catch { return { ok: false, error: { code: 'INTERNAL_ERROR', message: 'The database backup could not be completed. Check available storage.' } }; }
@@ -81,6 +89,9 @@ export class FactoryService {
       case 'snapshot': return this.store.transaction(() => ({ ...this.store.snapshot(), providers: [{ id: 'fake', available: true, authenticated: true, message: 'Deterministic simulation; no model calls.' }, this.codexHealth] }));
       case 'provider.health': fail('INVALID_INPUT', 'Provider checks require the asynchronous command handler.');
       case 'workspace.open': fail('INVALID_INPUT', 'Opening a worktree requires the asynchronous command handler.');
+      case 'delivery.inspect': return this.delivery.inspect(command.taskId);
+      case 'delivery.merge': return this.delivery.merge(command);
+      case 'delivery.push': fail('INVALID_INPUT', 'Pushing requires the asynchronous command handler.');
       case 'workspace.inspect': return this.builds.inspect(command.taskId);
       case 'project.configuration.get': {
         const project = this.store.db.prepare('SELECT * FROM projects WHERE id=?').get(command.projectId) as Project | undefined;

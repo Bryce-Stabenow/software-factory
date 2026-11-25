@@ -566,3 +566,78 @@ test('repeated setup failures do not exhaust implementation attempts', async t =
   ready = true; h.resume(h.snapshot().tasks[0], 'implement'); await h.service.builds.idle();
   assert.equal(h.snapshot().tasks[0].status, 'FINAL_REVIEW', h.snapshot().tasks[0].reason ?? ''); assert.equal(h.implementationCalls, 1);
 });
+
+test('delivery merges only the accepted commit, protects dirty and stale checkouts, and survives restart', async t => {
+  const h = await setup(t); h.approve(await h.makeTask()); await h.service.builds.idle();
+  let task = h.snapshot().tasks[0], workspace = h.snapshot().workspaces[0];
+  const merge = (defaultHead = h.mainHead) => h.service.dispatch({ type: 'delivery.merge', taskId: task.id, expectedVersion: task.version, expectedHead: workspace.head_sha!, expectedDefaultHead: defaultHead });
+  assert.equal(merge().ok, false); // Human acceptance is mandatory.
+  h.call(finalCommand(h)); task = h.snapshot().tasks[0];
+  const dirty = merge(); assert.equal(dirty.ok, false); if (!dirty.ok) assert.match(dirty.error.message, /Commit or stash/);
+  assert.equal(readFileSync(join(h.repo, 'keep-dirty.txt'), 'utf8'), 'Never overwrite my main checkout.\n');
+  rmSync(join(h.repo, 'keep-dirty.txt'));
+  const stale = merge('0'.repeat(40)); assert.equal(stale.ok, false); if (!stale.ok) assert.equal(stale.error.code, 'STALE_EVIDENCE');
+  assert.equal(git(h.repo, ['rev-parse', 'HEAD']).trim(), h.mainHead);
+  assert.equal(merge().ok, true);
+  assert.equal(h.snapshot().tasks[0].status, 'MERGED');
+  assert.equal(git(h.repo, ['rev-parse', 'HEAD']).trim(), workspace.head_sha);
+  assert.equal(readFileSync(join(h.repo, 'greeting.cjs'), 'utf8'), implemented);
+  assert.ok(existsSync(workspace.path));
+  assert.ok(h.snapshot().events.some(event => event.type === 'delivery.mergeRecorded'));
+  await h.restart(); assert.equal(h.snapshot().tasks[0].status, 'MERGED');
+});
+
+test('delivery merges diverged branches and rejects conflicts without changing either checkout', async t => {
+  for (const conflict of [false, true]) {
+    const h = await setup(t); h.approve(await h.makeTask()); await h.service.builds.idle(); h.call(finalCommand(h));
+    rmSync(join(h.repo, 'keep-dirty.txt'));
+    writeFileSync(join(h.repo, conflict ? 'greeting.cjs' : 'other.txt'), conflict ? 'exports.greet = () => "conflicting greeting";\n' : 'Independent main change\n');
+    git(h.repo, ['add', '--all']); git(h.repo, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'Concurrent default-branch change']);
+    const before = git(h.repo, ['rev-parse', 'HEAD']).trim(), task = h.snapshot().tasks[0];
+    const result = h.service.dispatch({ type: 'delivery.merge', taskId: task.id, expectedVersion: task.version, expectedHead: task.accepted_commit_sha!, expectedDefaultHead: before });
+    assert.equal(result.ok, !conflict, JSON.stringify(result));
+    if (conflict) {
+      assert.equal(git(h.repo, ['rev-parse', 'HEAD']).trim(), before);
+      assert.equal(git(h.repo, ['status', '--porcelain']).trim(), '');
+      assert.equal(h.snapshot().tasks[0].status, 'ACCEPTED');
+      assert.equal(git(h.snapshot().workspaces[0].path, ['status', '--porcelain']).trim(), '');
+    } else {
+      assert.equal(h.snapshot().tasks[0].status, 'MERGED');
+      assert.equal(git(h.repo, ['rev-list', '--parents', '-n', '1', 'HEAD']).trim().split(' ').length, 3);
+      assert.equal(readFileSync(join(h.repo, 'other.txt'), 'utf8'), 'Independent main change\n');
+      assert.equal(readFileSync(join(h.repo, 'greeting.cjs'), 'utf8'), implemented);
+    }
+  }
+});
+
+test('delivery pushes pinned task and merged default commits and preserves newer remote history', async t => {
+  const h = await setup(t); h.approve(await h.makeTask()); await h.service.builds.idle(); h.call(finalCommand(h));
+  const remote = join(h.directory, 'remote.git'); execFileSync('git', ['init', '--bare', remote], { stdio: 'ignore' });
+  git(h.repo, ['remote', 'add', 'origin', remote]);
+  let task = h.snapshot().tasks[0]; const workspace = h.snapshot().workspaces[0];
+  const push = (target: 'task' | 'default', expectedHead = task.accepted_commit_sha!, remoteName = 'origin') => h.service.handle({ type: 'delivery.push', taskId: task.id, expectedVersion: task.version, target, remote: remoteName, expectedHead });
+  assert.equal((await push('default')).ok, false);
+  assert.equal((await push('task', '0'.repeat(40))).ok, false);
+  assert.equal((await push('task', task.accepted_commit_sha!, '--all')).ok, false);
+  assert.equal((await push('task')).ok, true);
+  assert.equal(git(remote, ['rev-parse', `refs/heads/${workspace.branch}`]).trim(), task.accepted_commit_sha);
+  rmSync(join(h.repo, 'keep-dirty.txt'));
+  h.call({ type: 'delivery.merge', taskId: task.id, expectedVersion: task.version, expectedHead: task.accepted_commit_sha!, expectedDefaultHead: h.mainHead });
+  task = h.snapshot().tasks[0]; assert.equal((await push('default')).ok, true);
+  assert.equal(git(remote, ['rev-parse', 'refs/heads/main']).trim(), task.accepted_commit_sha);
+  const ahead = git(h.repo, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit-tree', `${task.accepted_commit_sha}^{tree}`, '-p', task.accepted_commit_sha!, '-m', 'Newer remote commit']).trim();
+  git(h.repo, ['push', 'origin', `${ahead}:refs/heads/main`]);
+  const rejected = await push('default'); assert.equal(rejected.ok, false);
+  assert.equal(git(remote, ['rev-parse', 'refs/heads/main']).trim(), ahead);
+  assert.equal(h.snapshot().tasks[0].status, 'MERGED');
+  assert.equal(h.snapshot().events.filter(event => event.type === 'delivery.pushed').length, 2);
+});
+
+test('delivery refuses worktree edits after acceptance', async t => {
+  const h = await setup(t); h.approve(await h.makeTask()); await h.service.builds.idle(); h.call(finalCommand(h));
+  const task = h.snapshot().tasks[0], workspace = h.snapshot().workspaces[0];
+  writeFileSync(join(workspace.path, 'greeting.cjs'), '// Changed after acceptance\n');
+  const result = h.service.dispatch({ type: 'delivery.merge', taskId: task.id, expectedVersion: task.version, expectedHead: task.accepted_commit_sha!, expectedDefaultHead: h.mainHead });
+  assert.equal(result.ok, false); if (!result.ok) assert.equal(result.error.code, 'STALE_EVIDENCE');
+  assert.equal(git(h.repo, ['rev-parse', 'HEAD']).trim(), h.mainHead);
+});
