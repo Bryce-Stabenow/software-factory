@@ -141,19 +141,23 @@ Removed the monogram and all line details. The current mark contains four solid 
 The simplified three-amber ship is now the approved identity. Replaced the unused legacy green native SVG, added the approved logo to the README, refreshed the README screenshot, and documented the canonical artwork and palette in `branding.md`. Desktop packaging now regenerates all icons automatically. The final renderer/typecheck/native build and signature verification passed; the bundled ICNS matches its generated source byte for byte. Browser verification confirmed the current sidebar mark with no warnings/errors. The preview used temporary data, was stopped afterward, and `.factory/` remains empty. Current screenshot: [approved identity](screenshots/ui-final-brand.jpg).
 
 
-## Repository folder picker — implementation verification pending
+## Repository folder picker — recovered and verified
 
-Added a desktop-only Choose folder control to Connect a repository, backed by the Tauri v2 dialog plugin with `directory: true` and `multiple: false`. The selected path remains visible and editable and is submitted unchanged through the existing `project.add` flow. Browser development retains manual entry and explains desktop picker availability.
+The desktop-only Choose folder control uses the Tauri dialog plugin with `directory: true` and `multiple: false`, registered in the native builder with only `dialog:allow-open` on the main window. Selection populates the existing editable path field and submits through project.add; browser development retains manual entry.
 
-Source inspection confirms separate picker activity, submission guards for blank fields and pending selection, cancellation preserving form values, retryable modal errors, and session checks that discard results after dismissal or unmount. Plugin registration and the main-window-only `dialog:allow-open` permission are present. These are source observations, not runtime test results.
+The original implementation stopped before dependency provisioning. Its npm checks failed with `sh: tsx: command not found` because this separate Git worktree had no node_modules. Four retries therefore never exercised tests. Both dependency lockfiles also needed real package-manager resolution. A later echo-only check was not test evidence.
 
-No commands, dependency installation, tests, builds, or native/browser interactions were run for this increment. The implementation environment permits repository file tools only; the service performs validation separately.
+Recovery resolved npm registry integrity metadata, generated the Rust dialog dependency graph and checksums with Cargo, installed locked npm development dependencies using `npm ci --include=dev`, and fetched the locked native crates. The existing npm test suite passed all 97 tests. Production service/Vue builds and typechecking passed; the Tauri release build succeeded with `--locked --offline`, and native code signatures were verified.
 
-Dependency resolution remains incomplete: JavaScript and Rust manifests pin dialog plugin 2.4.0, and package-lock.json contains a JavaScript package entry without a registry-verified integrity hash. Package availability and metadata have not been verified. Cargo.lock is unchanged because the plugin and its transitive dependencies require Cargo resolution; no checksums or transitive dependency graph were invented. The locked/offline Rust build is blocked until Cargo.lock is regenerated and the required crates are cached. Resolve and verify both dependency lockfiles before packaging.
+A second startup issue was reproduced in the no-network validation sandbox: the tsx CLI tries to create an IPC socket and receives EPERM. The test script now uses `node --import tsx --test tests/*.test.ts`, preserving the same test files and TypeScript transform without the CLI socket. A sandbox probe using that entry point passed all 15 workflow tests. The factory's final validation records rerun the complete suite, typecheck, and build for the committed recovery HEAD; those records remain authoritative for final review.
 
-Pending verification:
-- Run `npm run typecheck`, `npm run build`, and `npm test`.
-- Resolve Rust dependencies, then check the updated lockfile and the locked/offline desktop packaging build.
-- In the packaged native application, choose and connect a disposable Git repository with spaces and Unicode in its path; verify the canonical stored path and persistence after restart.
-- Check cancellation, reselection, repeated clicks, dismissal and reopening during selection, dialog failure and retry, non-Git rejection, blank fields, and keyboard access.
-- Check browser manual connection and confirm no picker control or native dialog invocation is exposed.
+Native verification used the packaged app with a disposable data directory and PATH restricted to /usr/bin:/bin:
+
+- Choose folder opened the operating-system directory dialog.
+- Cancelling returned to the unchanged connection form without creating a project.
+- Selecting a disposable Git repository whose path contains spaces and Unicode populated Repository path while preserving the project name.
+- Connect repository registered that selection and Projects displayed the canonical path.
+- After a complete app restart using the same test data directory, the selected project remained present.
+- Blank required fields left submission disabled. Separate picker activity, duplicate-launch guards, error handling, and stale-result guards were inspected in source; synthetic OS-dialog errors and dismissal races were not forced.
+
+Browser verification used separate disposable data. The connection form displayed manual path entry and its desktop-picker explanation, with no unusable Choose folder control. Entering the same Git repository path and submitting registered the project successfully. No model calls or real repository tasks were started by these UI checks. The factory app's ordinary project/request data was kept separate.
