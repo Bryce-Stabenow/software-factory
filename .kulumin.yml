@@ -1,0 +1,28 @@
+version: 1
+worktree_init:
+  # Download dependencies into each new worktree, including test/build tools.
+  # Each developer must also allow initialization network access in Project settings.
+  network: true
+  commands:
+    - name: Install dependencies
+      run: [npm, ci, --include=dev, --no-audit, --no-fund]
+      timeout_seconds: 600
+verification:
+  commands:
+    - name: Tests
+      run:
+        - npm
+        - test
+      timeout_seconds: 300
+    - name: Typecheck
+      run:
+        - npm
+        - run
+        - typecheck
+      timeout_seconds: 60
+    - name: Build
+      run:
+        - npm
+        - run
+        - build
+      timeout_seconds: 60
