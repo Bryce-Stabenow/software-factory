@@ -2,14 +2,14 @@ export type DiffLineKind = 'context' | 'add' | 'remove' | 'hunk' | 'meta';
 export interface DiffLine { text: string; kind: DiffLineKind; oldLine: number | null; newLine: number | null; }
 export interface DiffSection { path: string; oldPath: string | null; newPath: string | null; lines: DiffLine[]; binary: boolean; unavailable: boolean; }
 const unquotePath = (value: string) => {
-  const path = value.replace(/^[ab]\//, '');
-  if (!path.startsWith('"')) return path;
-  try { return JSON.parse(path); } catch { return path.slice(1, -1).replace(/\\(["\\])/g, '$1'); }
+  const decoded = value.startsWith('"')
+    ? (() => { try { return JSON.parse(value); } catch { return value.slice(1, -1).replace(/\\(["\\])/g, '$1'); } })()
+    : value;
+  return decoded.replace(/^[ab]\//, '');
 };
 function diffPath(header: string): { oldPath: string | null; newPath: string | null } {
-  const match = header.match(/^diff --git (.+) (.+)$/);
-  if (!match) return { oldPath: null, newPath: null };
-  const parts = match[1].startsWith('"') ? [...match[1].matchAll(/"((?:\\.|[^"])*)"|([^ ]+)/g)].map(item => item[1] ?? item[2]) : match.slice(1);
+  if (!header.startsWith('diff --git ')) return { oldPath: null, newPath: null };
+  const parts = header.slice('diff --git '.length).match(/"(?:\\.|[^"])*"|\S+/g) ?? [];
   return { oldPath: parts[0] ? unquotePath(parts[0]) : null, newPath: parts[1] ? unquotePath(parts[1]) : null };
 }
 function sectionFrom(raw: string[], fallback: string): DiffSection {
