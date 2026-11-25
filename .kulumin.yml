@@ -1,0 +1,23 @@
+version: 1
+worktree_init:
+  network: false
+  commands: []
+verification:
+  commands:
+    - name: Tests
+      run:
+        - npm
+        - test
+      timeout_seconds: 300
+    - name: Typecheck
+      run:
+        - npm
+        - run
+        - typecheck
+      timeout_seconds: 60
+    - name: Build
+      run:
+        - npm
+        - run
+        - build
+      timeout_seconds: 60
