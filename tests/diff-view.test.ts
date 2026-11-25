@@ -53,3 +53,21 @@ test('reads quoted Git paths', () => {
   const files = parseDiff('diff --git "a/file name.ts" "b/file name.ts"\n--- "a/file name.ts"\n+++ "b/file name.ts"\n@@ -1 +1 @@\n-old\n+new');
   assert.equal(files[0].path, 'file name.ts');
 });
+
+test('decodes Git C-style octal path escapes as UTF-8', () => {
+  const files = parseDiff('diff --git "a/\\303\\251.ts" "b/\\303\\251.ts"', ['é.ts']);
+  assert.deepEqual(files.map(file => file.path), ['é.ts']);
+});
+
+test('keeps metadata and hunk boundaries to one side-by-side row', () => {
+  const pairs = sideBySide(parseDiff(patch)[0].lines);
+  const fullWidth = pairs.filter(pair => pair.fullWidth);
+  assert.deepEqual(fullWidth.map(pair => pair.old?.text), [
+    'diff --git a/one.ts b/one.ts',
+    'index 1..2 100644',
+    '--- a/one.ts',
+    '+++ b/one.ts',
+    '@@ -2,2 +2,3 @@',
+  ]);
+  assert.ok(fullWidth.every(pair => pair.next === null));
+});

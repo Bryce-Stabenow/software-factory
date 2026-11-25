@@ -1,12 +1,36 @@
 export type DiffLineKind = 'context' | 'add' | 'remove' | 'hunk' | 'meta';
 export interface DiffLine { text: string; kind: DiffLineKind; oldLine: number | null; newLine: number | null; }
 export interface DiffSection { path: string; oldPath: string | null; newPath: string | null; lines: DiffLine[]; binary: boolean; unavailable: boolean; }
-const unquotePath = (value: string) => {
-  const decoded = value.startsWith('"')
-    ? (() => { try { return JSON.parse(value); } catch { return value.slice(1, -1).replace(/\\(["\\])/g, '$1'); } })()
-    : value;
-  return decoded.replace(/^[ab]\//, '');
-};
+
+function decodeGitQuotedPath(value: string): string {
+  if (!value.startsWith('"') || !value.endsWith('"')) return value;
+  const source = value.slice(1, -1);
+  const bytes: number[] = [];
+  const encoder = new TextEncoder();
+  const escapes: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '"': 34, '\\': 92 };
+
+  for (let index = 0; index < source.length; index++) {
+    if (source[index] !== '\\') {
+      const codePoint = source.codePointAt(index)!;
+      bytes.push(...encoder.encode(String.fromCodePoint(codePoint)));
+      if (codePoint > 0xffff) index++;
+      continue;
+    }
+
+    const escaped = source[++index];
+    if (escaped === undefined) bytes.push(92);
+    else if (/[0-7]/.test(escaped)) {
+      let octal = escaped;
+      while (octal.length < 3 && /[0-7]/.test(source[index + 1] ?? '')) octal += source[++index];
+      bytes.push(Number.parseInt(octal, 8));
+    } else if (escaped in escapes) bytes.push(escapes[escaped]);
+    else bytes.push(...encoder.encode(escaped));
+  }
+
+  return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+}
+
+const unquotePath = (value: string) => decodeGitQuotedPath(value).replace(/^[ab]\//, '');
 function diffPath(header: string): { oldPath: string | null; newPath: string | null } {
   if (!header.startsWith('diff --git ')) return { oldPath: null, newPath: null };
   const parts = header.slice('diff --git '.length).match(/"(?:\\.|[^"])*"|\S+/g) ?? [];
@@ -28,14 +52,14 @@ function sectionFrom(raw: string[], fallback: string): DiffSection {
 }
 export function parseDiff(diff: string, changedFiles: string[] = []): DiffSection[] {
   const chunks = (diff || '').split(/(?=^diff --git )/m).filter(chunk => chunk.startsWith('diff --git '));
-  const sections = chunks.map((chunk, index) => sectionFrom(chunk.replace(/\n$/, '').split('\n'), changedFiles[index] ?? `Unknown file ${index + 1}`));
+  const sections = chunks.map((chunk, index) => sectionFrom(chunk.replace(/\\n$/, '').split('\\n'), changedFiles[index] ?? `Unknown file ${index + 1}`));
   for (const path of changedFiles) if (!sections.some(section => section.path === path || section.oldPath === path || section.newPath === path)) sections.push({ path, oldPath: null, newPath: null, lines: [], binary: false, unavailable: true });
   return sections;
 }
 export function reconcileSelectedFile(files: DiffSection[], selected: string | null): string | null {
   return files.some(file => file.path === selected) ? selected : files[0]?.path ?? null;
 }
-export interface DiffPair { old: DiffLine | null; next: DiffLine | null; }
+export interface DiffPair { old: DiffLine | null; next: DiffLine | null; fullWidth: boolean; }
 export function sideBySide(lines: DiffLine[]): DiffPair[] {
   const pairs: DiffPair[] = [];
   for (let index = 0; index < lines.length;) {
@@ -44,8 +68,11 @@ export function sideBySide(lines: DiffLine[]): DiffPair[] {
       const removed: DiffLine[] = [], added: DiffLine[] = [];
       while (lines[index]?.kind === 'remove') removed.push(lines[index++]);
       while (lines[index]?.kind === 'add') added.push(lines[index++]);
-      for (let pair = 0; pair < Math.max(removed.length, added.length); pair++) pairs.push({ old: removed[pair] ?? null, next: added[pair] ?? null });
-    } else { pairs.push({ old: line, next: line }); index++; }
+      for (let pair = 0; pair < Math.max(removed.length, added.length); pair++) pairs.push({ old: removed[pair] ?? null, next: added[pair] ?? null, fullWidth: false });
+    } else {
+      pairs.push({ old: line, next: line.kind === 'context' ? line : null, fullWidth: line.kind !== 'context' });
+      index++;
+    }
   }
   return pairs;
 }
