@@ -16,7 +16,7 @@
     "build": "npm run build:service && npm run build --workspace @factory/desktop",
     "build:service": "tsc -p tsconfig.service.json",
     "typecheck": "tsc -p tsconfig.service.json --noEmit && vue-tsc -p apps/desktop/tsconfig.json --noEmit",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test tests/*.test.ts",
     "test:codex": "node --import tsx scripts/smoke-codex.ts",
     "test:implementation": "node --import tsx scripts/smoke-build.ts",
     "service": "node dist/apps/factory-service/src/main.js",

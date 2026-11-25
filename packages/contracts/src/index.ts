@@ -32,6 +32,7 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('request.create'), projectId: id, title: z.string().trim().min(1).max(200), body: text, kind: z.enum(['feature', 'bug', 'refactor', 'chore']), priority: z.enum(['low', 'normal', 'high']), acceptanceCriteria: z.array(text).max(30) }),
   z.object({ type: z.literal('request.update'), requestId: id, expectedVersion: version, projectId: id, title: z.string().trim().min(1).max(200), body: text, kind: z.enum(['feature', 'bug', 'refactor', 'chore']), priority: z.enum(['low', 'normal', 'high']), acceptanceCriteria: z.array(text).max(30) }),
   z.object({ type: z.literal('request.archive'), requestId: id, expectedVersion: version, archived: z.boolean() }),
+  z.object({ type: z.literal('request.startTask'), requestId: id, expectedVersion: version, provider: z.enum(['fake', 'codex']), model: z.string().min(1).max(120).optional() }),
   z.object({ type: z.literal('request.duplicate'), requestId: id, expectedVersion: version }),
   z.object({ type: z.literal('diagnostics.get') }),
   z.object({ type: z.literal('diagnostics.export') }),

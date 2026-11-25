@@ -96,3 +96,38 @@ test('migration 6 preserves pre-existing requests and task request versions acro
   assert.equal(snapshot.requestRevisions.length, 1); assert.equal(migrated.requestForTask(snapshot.tasks[0]).title, 'Private feature title');
   assert.equal(migrated.db.pragma('foreign_key_check').length, 0); migrated.close();
 });
+
+test('starting a saved request creates one task and plans immediately without approving execution', t => {
+  const h = setup(t), { id } = h.create();
+  assert.equal(h.snapshot().tasks.length, 0);
+  const task = h.call<Task>({ type: 'request.startTask', requestId: id, expectedVersion: 1, provider: 'fake' });
+  assert.equal(task.status, 'PLAN_REVIEW');
+  assert.equal(task.approved_plan_revision_id, null);
+  assert.equal(h.snapshot().workspaces.length, 0);
+  const duplicate = h.service.dispatch({ type: 'request.startTask', requestId: id, expectedVersion: 1, provider: 'fake' });
+  assert.equal(duplicate.ok, false);
+  assert.equal(h.snapshot().tasks.length, 1);
+  assert.equal(h.snapshot().plans.length, 1);
+});
+test('starting requests rejects stale or archived inputs and reuses an existing unstarted task', t => {
+  const h = setup(t), { id } = h.create();
+  const request = h.snapshot().requests[0]; h.update(request);
+  assert.equal(h.service.dispatch({ type: 'request.startTask', requestId: id, expectedVersion: 1, provider: 'fake' }).ok, false);
+  assert.equal(h.snapshot().tasks.length, 0);
+  const archived = h.call<Request>({ type: 'request.archive', requestId: id, expectedVersion: 2, archived: true });
+  assert.equal(h.service.dispatch({ type: 'request.startTask', requestId: id, expectedVersion: archived.version, provider: 'fake' }).ok, false);
+  const restored = h.call<Request>({ type: 'request.archive', requestId: id, expectedVersion: archived.version, archived: false });
+  const inbox = h.call<Task>({ type: 'task.createFromRequest', requestId: id });
+  const planned = h.call<Task>({ type: 'request.startTask', requestId: id, expectedVersion: restored.version, provider: 'fake' });
+  assert.equal(planned.id, inbox.id); assert.equal(planned.status, 'PLAN_REVIEW');
+  assert.equal(h.snapshot().tasks.length, 1);
+});
+test('a planning enqueue failure rolls back task creation while preserving the saved request', t => {
+  const h = setup(t), { id } = h.create();
+  h.service.planning.enqueue = () => { throw new Error('Fixture enqueue failure'); };
+  const result = h.service.dispatch({ type: 'request.startTask', requestId: id, expectedVersion: 1, provider: 'codex' });
+  assert.equal(result.ok, false);
+  assert.equal(h.snapshot().requests.length, 1);
+  assert.equal(h.snapshot().tasks.length, 0);
+  assert.equal(h.snapshot().events.filter(event => event.type === 'task.created').length, 0);
+});

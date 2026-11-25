@@ -63,7 +63,7 @@ The amber ship uses three closely spaced swept sails and a low hull in three sha
 
 ## Requests and revisions
 
-**Requests** offers **Edit request** and **Archive request** in the row menu, plus an active/archived/all filter. Open a request to save edits or create its task. Archived requests can be restored; archiving never cancels or hides their tasks from Issues or Overview. All updates use optimistic version checks and create immutable history.
+**Requests** offers **Edit request** and **Archive request** in the row menu, plus an active/archived/all filter. **Save for later** keeps a request in the backlog without starting work. **Start task** saves it and immediately queues planning with the selected provider/model. Saved requests also offer **Start task with Codex** in the row menu; no separate task-creation step is required. If starting fails, the saved request stays available for retry. Archived requests can be restored; archiving never cancels or hides their tasks from Issues or Overview. All updates use optimistic version checks and create immutable history.
 
 Existing tasks continue to use the request version captured when they were created, including the original project and acceptance criteria. Editing the request does not alter an approved plan or implementation. **Create revised request** copies the latest request into a new identity so updated scope can receive its own task and approval.
 
@@ -92,22 +92,22 @@ Restore checks database integrity/schema and retains the original worktree paths
 ## Use implementation and validation
 
 1. Register a repository in **Projects**. Its default branch must have an initial commit. Dirty files in the main checkout remain untouched and are not copied into a task’s worktree.
-2. Expand **Implementation & validation settings**. Leave execution disabled for unknown/untrusted repositories. For a trusted repository, acknowledge code execution, enable implementation, and configure check commands.
-3. Enter checks as literal argument arrays, with unique names and bounded timeouts:
+2. Connecting a repository opens **Finish project setup**. Existing projects have a **Project settings** button. Save it for planning only, set it up later, or explicitly trust the repository and enable implementation.
+3. Add validation checks using a name, command, and timeout in seconds. **Which checks should I add?** explains the options and supplies examples; use only commands your repository actually supports.
 
-   ```json
-   [
-     { "name": "Typecheck", "argv": ["npm", "run", "typecheck"], "timeoutMs": 60000 },
-     { "name": "Tests", "argv": ["npm", "test"], "timeoutMs": 120000 }
-   ]
-   ```
+   | Check | Example command | Purpose |
+   |---|---|---|
+   | Tests | `npm test` | Verify expected behavior |
+   | Lint | `npm run lint` | Find style problems and common mistakes |
+   | Build | `npm run build` | Check compilation/build output |
 
-4. Create a request and task. Choose **Codex**, check the connection/models, and start planning. Planning uses a bounded read-only snapshot. Answer any clarification questions or request revisions before approval.
+   Every configured check is required. Each runs after implementation and repairs in the isolated task worktree, and must succeed for the exact commit before independent review. Set the timeout long enough for your suite (for example, 180 seconds for a two-minute test run). Add separate checks instead of shell chains such as `npm test && npm run build`; quoted arguments are supported. The helper examples are suggestions, not automatic detection of repository scripts. Implementation requires at least one check in the setup form; planning requires none.
+4. Create a request and choose **Save for later** or **Start task**. Start task immediately queues read-only planning; Codex uses your local CLI sign-in and the selected model/catalog default. Answer any clarification questions or request revisions before approval. Simulation remains explicitly labeled and cannot authorize execution.
 5. Approve the exact plan revision/digest. If project execution is enabled, a worker starts automatically; otherwise the task remains queued until you explicitly start it. Existing queued tasks are not dispatched just because settings change. Simulated plans never start a real implementation.
 6. Watch the task’s worktree, base/current commit, diff, progress, and validation logs. Successful checks for the exact current commit start independent read-only code review. Older tasks already at `CODE_REVIEW` offer **Revalidate & review**.
 7. Inspect **Final human review**: implementation/repair summaries, limitations, diff, required checks and captured logs, independent findings and history, base/current SHA, and evidence digest. Choose **Accept reviewed commit**, **Request changes**, or **Reject**. Changes/rejection require feedback. Requests for changes stay within the approved plan and use the same three-repair budget; new scope needs a new request and approval.
 
-Checks need dependencies already available locally. The factory does not install dependencies or grant network access. Open the task worktree to prepare trusted dependencies yourself, or configure commands that work offline. Missing commands are disclosed as **NOT RUN** and block code review. Nonzero exits and timeouts trigger bounded repairs. Source/HEAD changes during validation and changed check configuration block progression and require inspection.
+Checks need dependencies installed in the task worktree; Git does not copy ignored `node_modules` from the main checkout. For npm projects with a lockfile, open that worktree in a terminal and run `npm ci --include=dev` before validating. Missing tools block for setup without consuming code-repair attempts. If a `tsx` CLI script needs a sandbox-blocked IPC socket, use `node --import tsx --test` instead; Kulumin’s own test script uses this entry point. The factory does not install dependencies or grant network access. Open the task worktree to prepare trusted dependencies yourself, or configure commands that work offline. Missing commands are disclosed as **NOT RUN** and block code review. Nonzero exits and timeouts trigger bounded repairs. Source/HEAD changes during validation and changed check configuration block progression and require inspection.
 
 The implementer uses bounded list/read/write/delete tools confined to the task worktree. Shell, Git, network, plugins, and subagents are unavailable to the model. File edits require the digest from the latest read, and the service checks approval, task status, and run ownership before each operation. The service verifies and commits actual Git changes with hooks/signing disabled. Repositories with executable Git filters are currently blocked. Binary, symlink, protected metadata, and oversized file edits are unsupported.
 

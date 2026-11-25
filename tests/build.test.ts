@@ -438,3 +438,22 @@ test('cancelling a repair preserves edits and prevents fresh evidence publicatio
   h.call({ type: 'task.cancel', taskId: task.id, expectedVersion: task.version, reason: 'Stop the partial repair' }); await h.service.builds.idle();
   assert.equal(h.snapshot().tasks[0].status, 'CANCELLED'); assert.match(readFileSync(join(workspace.path, 'greeting.cjs'), 'utf8'), /preserved partial repair/); assert.equal(h.snapshot().evidence.length, 0);
 });
+
+
+test('missing validation tools block for setup without consuming repair attempts and recover through validation', async t => {
+  let calls = 0;
+  const h = await setup(t, { validator: { async run() { return ++calls === 1 ? { exitCode: 127, log: 'sh: tsx: command not found\n' } : { exitCode: 0, log: 'Test suite passed after dependency setup' }; } } });
+  h.approve(await h.makeTask()); await h.service.builds.idle();
+  let snapshot = h.snapshot();
+  assert.equal(snapshot.tasks[0].status, 'BLOCKED');
+  assert.match(snapshot.tasks[0].reason ?? '', /npm ci/);
+  assert.equal(snapshot.runs.filter(run => run.stage === 'repair').length, 0);
+  assert.equal(snapshot.validations[0].status, 'failed');
+  assert.match(snapshot.validations[0].reason ?? '', /setup failure/);
+  assert.equal(h.implementationCalls, 1);
+  h.resume(snapshot.tasks[0], 'validate'); await h.service.builds.idle();
+  snapshot = h.snapshot();
+  assert.equal(snapshot.tasks[0].status, 'FINAL_REVIEW');
+  assert.equal(snapshot.runs.filter(run => run.stage === 'repair').length, 0);
+  assert.equal(h.implementationCalls, 1);
+});

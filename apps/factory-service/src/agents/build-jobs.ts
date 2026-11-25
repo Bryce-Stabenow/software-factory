@@ -9,7 +9,7 @@ import { CodexError } from './rpc.js';
 import { allowedPath, createPlanningSnapshot, snapshotDigest, redact } from './snapshot.js';
 import { EvidenceManager } from '../checks/evidence.js';
 import { WorkspaceManager } from '../git/workspaces.js';
-import { CodexValidationRunner, redactLog, type ValidationAdapter } from '../checks/validation.js';
+import { CodexValidationRunner, validationEnvironmentFailure, redactLog, type ValidationAdapter } from '../checks/validation.js';
 import { RunPool } from '../scheduler/run-pool.js';
 
 export function executionConfig(project: Project): ExecutionConfig {
@@ -281,13 +281,15 @@ Snapshot omitted files: ${snapshot.omitted}. Deleted files appear in the diff. I
       this.guard(job, 'VALIDATING');
       const stale = this.workspaces.head(workspace) !== head || this.workspaces.fingerprint(workspace) !== before;
       const log = redactLog(result.log).slice(0, 130000);
+      const setupRequired = result.exitCode !== 0 ? validationEnvironmentFailure(log) : null;
       writeFileSync(logPath, log, { mode: 0o600 });
       this.store.transaction(() => {
-        this.store.db.prepare('UPDATE validation_runs SET exit_code=?,status=?,log_text=?,reason=?,finished_at=? WHERE id=?').run(result.exitCode, stale ? 'stale' : result.exitCode === 0 ? 'passed' : result.exitCode === 124 ? 'timed_out' : 'failed', log, stale ? 'The check changed the source or HEAD; evidence is invalid.' : result.exitCode === 0 ? null : result.exitCode === 124 ? 'Command exceeded its configured timeout.' : 'Command exited with a nonzero status.', new Date().toISOString(), id);
+        this.store.db.prepare('UPDATE validation_runs SET exit_code=?,status=?,log_text=?,reason=?,finished_at=? WHERE id=?').run(result.exitCode, stale ? 'stale' : result.exitCode === 0 ? 'passed' : result.exitCode === 124 ? 'timed_out' : 'failed', log, stale ? 'The check changed the source or HEAD; evidence is invalid.' : result.exitCode === 0 ? null : setupRequired ? setupRequired : result.exitCode === 124 ? 'Command exceeded its configured timeout.' : 'Command exited with a nonzero status.', new Date().toISOString(), id);
         if (stale) this.store.db.prepare("UPDATE validation_runs SET status='stale' WHERE task_id=? AND commit_sha=? AND status='passed'").run(task.id, head);
         this.store.event('validation.completed', task.project_id, task.id, { validationId: id, exitCode: result.exitCode, stale, commitSha: head });
       });
       if (stale) fail('STALE_EVIDENCE', 'Validation changed the worktree or HEAD. Prior checks are stale; inspect the preserved edits before recovery.');
+      if (setupRequired) throw new CodexError('VALIDATION_SETUP_REQUIRED', setupRequired);
       if (result.exitCode === 124) throw new CodexError('VALIDATION_TIMEOUT', 'A configured validation command exceeded its timeout. The commit and captured output are preserved.');
       if (result.exitCode !== 0) throw new CodexError('VALIDATION_FAILED', 'A configured validation command failed. Inspect its captured log.');
     }

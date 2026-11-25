@@ -15,6 +15,19 @@ export const redactLog = (value: string) => redact(value)
   .replace(/(\b[A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|API_KEY)[A-Z0-9_]*\s*[:=]\s*["']?)[^\s"',;]+/gi, '$1[REDACTED]')
   .replace(/(\bAuthorization\s*:\s*Bearer\s+)[^\s]+/gi, '$1[REDACTED]');
 
+// These failures happen before a check can exercise source. Repairing code cannot
+// provision a missing toolchain, and must not consume the plan's repair budget.
+export function missingValidationDependency(log: string): boolean {
+  return /(?:(?:^|\n)(?:(?:\/[^\s:]+\/)?(?:sh|bash|zsh|env):[^\n]*(?:not found|No such file or directory)|[^\n:]+: command not found)(?:\r?\n|$)|Cannot find package ['"][^.'"/][^'"\n]*['"]|Cannot find module ['"][^'"\n]*node_modules\/[^'"\n]*['"]|ERR_MODULE_NOT_FOUND[^\n]*package)/i.test(log);
+}
+export const validationSetupMessage = 'A validation command or dependency is missing. Prepare the task worktree (for npm projects, run npm ci --include=dev there), then use Revalidate & review. No code repair was attempted for this setup failure.';
+
+export function validationEnvironmentFailure(log: string): string | null {
+  if (missingValidationDependency(log)) return validationSetupMessage;
+  if (/Error: listen (?:EPERM|EACCES)\b/.test(log)) return 'The validation sandbox blocked the check’s IPC socket. For tsx tests use node --import tsx --test instead of the tsx CLI. Configure a sandbox-compatible check, then revalidate. No code repair or permission expansion was attempted.';
+  return null;
+}
+
 export class CodexValidationRunner implements ValidationAdapter {
   constructor(private binary = process.env.FACTORY_CODEX_BINARY ?? 'codex', private args = serverArgs) {}
   async run(input: ValidationInput) {

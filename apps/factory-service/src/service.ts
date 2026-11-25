@@ -154,6 +154,14 @@ export class FactoryService {
         const request = this.getRequest(command.requestId, command.expectedVersion);
         return this.execute({ type: 'request.create', projectId: request.project_id, title: request.title, body: request.body, kind: request.type as 'feature', priority: request.priority as 'normal', acceptanceCriteria: JSON.parse(request.acceptance_criteria_json) });
       });
+      case 'request.startTask': return this.store.transaction(() => {
+        const request = this.getRequest(command.requestId, command.expectedVersion);
+        if (request.status === 'archived') fail('INVALID_TRANSITION', 'Restore the request before starting a task.');
+        let task = this.store.db.prepare('SELECT * FROM tasks WHERE request_id=?').get(request.id) as import('../../../packages/contracts/src/index.js').Task | undefined;
+        if (task && task.status !== 'INBOX') fail('CONFLICT', 'This request already has a started task. Open its issue to follow progress or retry.');
+        task ??= this.execute({ type: 'task.createFromRequest', requestId: request.id }) as import('../../../packages/contracts/src/index.js').Task;
+        return this.execute({ type: 'task.assign', taskId: task.id, expectedVersion: task.version, provider: command.provider, model: command.model });
+      });
       case 'task.createFromRequest': return this.store.transaction(() => {
         const request = this.store.db.prepare('SELECT * FROM requests WHERE id=?').get(command.requestId) as Request | undefined;
         if (!request) fail('NOT_FOUND', 'Request not found.');
