@@ -142,10 +142,17 @@ export class WorkspaceManager {
   }
   inspect(task: Task): WorkspaceDetails {
     const workspace = this.verify(task);
+    // Review only the task's contribution relative to the shared default-branch
+    // history. Keep the original creation base for workspace integrity checks.
+    const project = this.project(task);
+    const bases = git(workspace.path, ['merge-base', '--all', 'HEAD', `refs/heads/${project.default_branch}`]).trim().split('\n');
+    if (bases.length !== 1) fail('WORKSPACE_CONFLICT', 'The task and default branch have ambiguous shared history. Merge the default branch into the task before reviewing.');
+    const common = bases[0]!;
+    const reviewBaseSha = common === workspace.base_sha || git(workspace.path, ['merge-base', workspace.base_sha, common]).trim() === workspace.base_sha ? common : workspace.base_sha;
     let diff = '', truncated = false;
-    try { diff = git(workspace.path, ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', workspace.base_sha, '--']); }
+    try { diff = git(workspace.path, ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', reviewBaseSha, '--']); }
     catch { diff = 'Diff exceeds the capture limit or Git could not render it. Open the worktree to inspect all changes.'; truncated = true; }
     if (diff.length > 150000) { diff = diff.slice(0, 150000); truncated = true; }
-    return { ...workspace, currentHead: this.head(workspace), workspaceDigest: this.fingerprint(workspace), dirty: this.changed(workspace).length > 0, changedFiles: this.changed(workspace, workspace.base_sha), diff: redact(diff), truncated };
+    return { ...workspace, reviewBaseSha, currentHead: this.head(workspace), workspaceDigest: this.fingerprint(workspace), dirty: this.changed(workspace).length > 0, changedFiles: this.changed(workspace, reviewBaseSha), diff: redact(diff), truncated };
   }
 }

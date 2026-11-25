@@ -133,6 +133,8 @@ Successful initialization is remembered per managed worktree and initialization 
 
 Missing tools block for setup without consuming code-repair attempts. If a `tsx` CLI script needs a sandbox-blocked IPC socket, use `node --import tsx --test` instead; Kulumin’s own test script uses this entry point. Missing verification commands are disclosed as **NOT RUN** and block code review. Verification nonzero exits and timeouts trigger bounded repairs, while source/HEAD changes or changed configuration require inspection.
 
+Review and final evidence compare the task commit with its shared history on the project’s default branch. After merging the default branch into a task, inherited changes are excluded from the task diff. The original worktree creation base is preserved, and a changed review base invalidates existing evidence.
+
 The implementer uses bounded list/read/write/delete tools confined to the task worktree. Shell, Git, network, plugins, and subagents are unavailable to the model. File edits require the digest from the latest read, and the service checks approval, task status, and run ownership before each operation. The service verifies and commits actual Git changes with hooks/signing disabled. Repositories with executable Git filters are currently blocked. Binary, symlink, protected metadata, and oversized file edits are unsupported.
 
 Project code is sent to OpenAI through the signed-in Codex account. Snapshot/path exclusions and recognized credential redaction reduce exposure but do not guarantee arbitrary source is secret-free. Only use repositories suitable for that provider. Validation executes trusted project code under a no-network workspace sandbox and a restricted environment; worktrees are not disposable VMs.

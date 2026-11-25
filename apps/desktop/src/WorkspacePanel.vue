@@ -8,7 +8,7 @@ const emit = defineEmits<{ inspect: []; open: []; resume: [stage: 'implement' | 
 <template>
   <section class="workspace-panel">
     <div class="evidence-block"><div class="evidence-block-header"><UIcon name="i-lucide-git-branch" /><h3>Isolated worktree</h3><UBadge color="neutral" variant="subtle" size="xs">Local branch</UBadge></div><div class="evidence-block-body">
-      <p class="path-text">{{ workspace.path }}</p><dl class="artifact-facts"><dt>Branch</dt><dd><code>{{ workspace.branch }}</code></dd><dt>Base</dt><dd><code>{{ workspace.base_sha }}</code></dd><dt>HEAD</dt><dd><code>{{ details?.currentHead ?? workspace.head_sha ?? 'Preparing…' }}</code></dd></dl>
+      <p class="path-text">{{ workspace.path }}</p><dl class="artifact-facts"><dt>Branch</dt><dd><code>{{ workspace.branch }}</code></dd><dt>Base</dt><dd><code>{{ workspace.base_sha }}</code></dd><template v-if="details && details.reviewBaseSha !== workspace.base_sha"><dt>Review base</dt><dd><code>{{ details.reviewBaseSha }}</code></dd></template><dt>HEAD</dt><dd><code>{{ details?.currentHead ?? workspace.head_sha ?? 'Preparing…' }}</code></dd></dl>
       <div class="action-row" style="margin-top:18px"><UButton color="neutral" variant="outline" size="sm" icon="i-lucide-folder-open" @click="emit('open')">Open worktree</UButton><UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-copy" @click="emit('copy', workspace.branch)">Copy branch</UButton><UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-refresh-cw" :disabled="busy" @click="emit('inspect')">Refresh</UButton></div>
     </div></div>
     <UAlert v-if="error" color="error" variant="subtle" :description="error" class="mb-4" />

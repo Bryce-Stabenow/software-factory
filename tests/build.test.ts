@@ -641,3 +641,46 @@ test('delivery refuses worktree edits after acceptance', async t => {
   assert.equal(result.ok, false); if (!result.ok) assert.equal(result.error.code, 'STALE_EVIDENCE');
   assert.equal(git(h.repo, ['rev-parse', 'HEAD']).trim(), h.mainHead);
 });
+
+test('review excludes inherited default-branch changes after integrating main into a task', async t => {
+  const prompts: string[] = [];
+  const h = await setup(t, { reviewer: { async review(input) { prompts.push(input.prompt); return { commitSha: input.commitSha, verdict: 'pass', summary: 'Task contribution reviewed.', findings: [] }; } } });
+  h.approve(await h.makeTask()); await h.service.builds.idle();
+  const workspace = h.snapshot().workspaces[0];
+  writeFileSync(join(h.repo, 'inherited-large.txt'), 'Inherited main change\n'.repeat(15000));
+  writeFileSync(join(h.repo, 'inherited-image.png'), Buffer.from([0, 1, 2, 3]));
+  git(h.repo, ['add', '--', 'inherited-large.txt', 'inherited-image.png']);
+  git(h.repo, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'Independent main updates']);
+  const integratedBase = git(h.repo, ['rev-parse', 'HEAD']).trim();
+  git(workspace.path, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'merge', '--no-edit', '--no-gpg-sign', 'main']);
+  const details = h.call<WorkspaceDetails>({ type: 'workspace.inspect', taskId: workspace.task_id });
+  assert.equal(details.base_sha, h.mainHead); // Creation provenance is preserved.
+  assert.equal(details.reviewBaseSha, integratedBase);
+  assert.equal(details.truncated, false); assert.equal(details.dirty, false);
+  assert.deepEqual(details.changedFiles, ['greeting.cjs']);
+  assert.doesNotMatch(details.diff, /Inherited main change/);
+  h.resume(h.snapshot().tasks[0], 'validate', details); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'FINAL_REVIEW', h.snapshot().tasks[0].reason ?? '');
+  assert.match(prompts.at(-1)!, new RegExp(`Base: ${integratedBase}`));
+  assert.doesNotMatch(prompts.at(-1)!, /inherited-image\.png|inherited-large\.txt/);
+  assert.equal(JSON.parse(h.snapshot().evidence.at(-1)!.body_json).baseSha, integratedBase);
+  h.call(finalCommand(h));
+  // Main moving forward without being merged into this task does not change its review base.
+  writeFileSync(join(h.repo, 'later-main.txt'), 'Another independent change\n');
+  git(h.repo, ['add', '--', 'later-main.txt']);
+  git(h.repo, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-m', 'Later main change']);
+  h.call({ type: 'workspace.inspect', taskId: workspace.task_id });
+  assert.equal(h.snapshot().tasks[0].status, 'ACCEPTED');
+});
+
+test('a review-base change during independent review cannot authorize acceptance', async t => {
+  let repo = '';
+  const h = await setup(t, { reviewer: { async review(input) {
+    git(repo, ['merge', '--ff-only', input.commitSha]);
+    return { commitSha: input.commitSha, verdict: 'pass', summary: 'Must be rejected after baseline changed.', findings: [] };
+  } } }); repo = h.repo;
+  h.approve(await h.makeTask()); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'BLOCKED');
+  assert.match(h.snapshot().tasks[0].reason!, /changed during review/);
+  assert.equal(h.snapshot().evidence.length, 0);
+});

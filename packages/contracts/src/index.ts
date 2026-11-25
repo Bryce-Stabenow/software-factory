@@ -82,7 +82,7 @@ export interface DomainEvent { sequence: number; project_id: string | null; task
 export interface Approval { id: string; task_id: string; gate: string; action: string; artifact_id: string; artifact_digest: string; feedback: string; actor: string; decided_at: string }
 export interface AgentRun { id: string; task_id: string; stage: string; provider: string; model: string | null; status: string; provider_session_ref: string | null; turn_ref: string | null; attempt: number; started_at: string; finished_at: string | null; error_code: string | null; summary: string | null; heartbeat_at?: string | null; recovery_stage?: string | null }
 export interface Workspace { id: string; task_id: string; path: string; branch: string; base_sha: string; head_sha: string | null; cleanup_status: string; created_at: string }
-export interface WorkspaceDetails extends Workspace { currentHead: string; workspaceDigest: string; dirty: boolean; changedFiles: string[]; diff: string; truncated: boolean }
+export interface WorkspaceDetails extends Workspace { reviewBaseSha: string; currentHead: string; workspaceDigest: string; dirty: boolean; changedFiles: string[]; diff: string; truncated: boolean }
 export interface DeliveryDetails { defaultBranch: string; defaultHead: string; taskBranch: string; remotes: string[]; mergeBlocker: string | null }
 export interface ValidationRun { id: string; task_id: string; commit_sha: string; name: string; argv_json: string; exit_code: number | null; status: string; log_text: string; reason: string | null; started_at: string; finished_at: string | null }
 export interface Question { id: string; task_id: string; plan_revision_id: string; prompt: string; answer: string | null; status: string }

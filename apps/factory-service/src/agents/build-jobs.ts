@@ -269,7 +269,9 @@ Defects and human feedback: ${JSON.stringify(failures ?? null)}`),
   }
   private async review(job: BuildJob) {
     const task = this.guard(job, 'CODE_REVIEW'), details = this.workspaces.inspect(task);
-    if (details.dirty || details.truncated || details.currentHead !== details.head_sha) fail('STALE_EVIDENCE', 'Review requires a clean current commit and the full captured diff.');
+    if (details.dirty) fail('STALE_EVIDENCE', 'Review requires a clean worktree. Commit or restore uncommitted changes before revalidating.');
+    if (details.currentHead !== details.head_sha) fail('STALE_EVIDENCE', 'The current commit differs from the validated commit. Revalidate before review.');
+    if (details.truncated) fail('STALE_EVIDENCE', 'The review diff exceeds the capture limit or could not be rendered. Inspect the task changes against the review base before retrying.');
     const directory = join(this.dataDir, 'artifacts', task.id, job.id, 'review-snapshot');
     const snapshot = createPlanningSnapshot(details.path, directory);
     if (details.changedFiles.some(file => !allowedPath(file) || (!snapshot.files.includes(file) && existsSync(join(details.path, file))))) fail('POLICY_DENIED', 'A changed file cannot be safely included in the review snapshot. Review is blocked.');
@@ -281,7 +283,7 @@ Defects and human feedback: ${JSON.stringify(failures ?? null)}`),
       prompt: redact(`Independently review this exact committed change. Read relevant source and tests. Echo commitSha exactly. Block on insufficient evidence; request changes for actionable defects.
 Task: ${task.id}
 Commit: ${details.currentHead}
-Base: ${details.base_sha}
+Base: ${details.reviewBaseSha}
 Approved plan: ${plan.body_json}
 Request: ${request.body}
 Acceptance criteria: ${request.acceptance_criteria_json}
@@ -293,7 +295,7 @@ Snapshot omitted files: ${snapshot.omitted}. Deleted files appear in the diff. I
     }));
     this.guard(job, 'CODE_REVIEW');
     const after = this.workspaces.inspect(task);
-    if (snapshotDigest(snapshot.path, snapshot.files) !== snapshot.digest || after.currentHead !== details.currentHead || after.workspaceDigest !== details.workspaceDigest || after.dirty) {
+    if (snapshotDigest(snapshot.path, snapshot.files) !== snapshot.digest || after.currentHead !== details.currentHead || after.reviewBaseSha !== details.reviewBaseSha || after.workspaceDigest !== details.workspaceDigest || after.dirty) {
       this.store.db.prepare("UPDATE validation_runs SET status='stale',reason='Worktree changed during review.' WHERE task_id=? AND status='passed'").run(task.id);
       fail('STALE_EVIDENCE', 'The source or read-only review snapshot changed during review. No review was accepted.');
     }
