@@ -36,7 +36,7 @@ try {
   const project = await current.call({ type: 'project.add', name: 'Disposable package fixture', path: repo });
   const configuration = await current.call({ type: 'project.configuration.get', projectId: project.id });
   assert.equal(configuration.exists, false);
-  await current.call({ type: 'project.configuration.save', projectId: project.id, expectedVersion: 1, expectedDigest: null, configuration: { version: 1, worktree_init: { commands: [] }, verification: { commands: [{ name: 'Fixture', run: ['node', 'test.js'] }] } }, local: { executionEnabled: false, trustedRepository: false } });
+  await current.call({ type: 'project.configuration.save', projectId: project.id, expectedVersion: 1, expectedDigest: null, configuration: { version: 1, worktree_init: { commands: [] }, verification: { commands: [{ name: 'Fixture', run: ['node', 'test.js'] }] } }, local: { provider: 'codex', planningModel: null, implementationModel: null, reviewModel: null, executionEnabled: false, trustedRepository: false } });
   const savedConfiguration = await current.call({ type: 'project.configuration.get', projectId: project.id });
   assert.equal(savedConfiguration.configuration.verification.commands[0].name, 'Fixture');
   assert.equal(savedConfiguration.authorized, true); assert.equal(savedConfiguration.local.initializationNetworkAllowed, false);

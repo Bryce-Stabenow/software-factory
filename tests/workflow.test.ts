@@ -134,3 +134,27 @@ test('one request creates only one task and foreign keys are enforced', t => {
   assert.throws(() => h.call({ type: 'task.createFromRequest', requestId: h.task.request_id }), errorCode('CONFLICT'));
   assert.throws(() => h.store.db.prepare('DELETE FROM projects WHERE id=?').run(h.task.project_id), /FOREIGN KEY/);
 });
+
+test('project defaults persist and both start paths capture mixed overrides', t => {
+  const h = harness(t);
+  const initial = h.call<Snapshot>({ type: 'snapshot' }).projects[0];
+  const initialConfig = JSON.parse(initial.config_json);
+  assert.equal(initialConfig.provider, 'codex');
+  for (const field of ['planningModel', 'implementationModel', 'reviewModel']) assert.equal(initialConfig[field], null);
+  const configuration = { version: 1 as const, worktree_init: { network: false, commands: [] }, verification: { commands: [] } };
+  const defaults = { provider: 'fake' as const, planningModel: 'plan-id', implementationModel: 'build-id', reviewModel: 'review-id', executionEnabled: false, trustedRepository: false };
+  h.call({ type: 'project.configuration.save', projectId: initial.id, expectedVersion: initial.version, expectedDigest: null, configuration, local: defaults });
+  h.restart();
+  const state = h.call<import('../packages/contracts/src/index.js').RepositoryConfigurationState>({ type: 'project.configuration.get', projectId: initial.id });
+  assert.equal(state.local.reviewModel, 'review-id');
+  const task = h.call<Task>({ type: 'task.assign', taskId: h.task.id, expectedVersion: h.task.version, planningModel: null, reviewModel: 'override-review' });
+  assert.deepEqual(JSON.parse(task.provider_policy_json), { provider: 'fake', planningModel: null, implementationModel: 'build-id', reviewModel: 'override-review', requestVersion: 1 });
+  const request = h.call<{ id: string }>({ type: 'request.create', projectId: initial.id, title: 'Inherited start', body: 'Use defaults.', kind: 'feature', priority: 'normal', acceptanceCriteria: [] });
+  const started = h.call<Task>({ type: 'request.startTask', requestId: request.id, expectedVersion: 1 });
+  assert.equal(JSON.parse(started.provider_policy_json).planningModel, 'plan-id');
+  const before = readFileSync(join(h.repo, '.kulumin.yml'), 'utf8');
+  const latest = h.call<Snapshot>({ type: 'snapshot' }).projects[0];
+  h.call({ type: 'project.configuration.save', projectId: latest.id, expectedVersion: latest.version, expectedDigest: state.digest, configuration, local: { ...defaults, planningModel: 'new-plan' } });
+  assert.equal(readFileSync(join(h.repo, '.kulumin.yml'), 'utf8'), before);
+  assert.equal(JSON.parse(h.store.task(started.id)!.provider_policy_json).planningModel, 'plan-id');
+});

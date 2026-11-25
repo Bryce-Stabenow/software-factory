@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { ZodError } from 'zod';
-import { commandSchema, executionConfigSchema, repositoryConfigurationSchema, localProjectSettingsSchema, type Command, type Project, type Request, type Response } from '../../../packages/contracts/src/index.js';
+import { taskPolicySchema, defaultAgentSettings, agentDefaultsSchema, resolveAgentDefaults, commandSchema, executionConfigSchema, repositoryConfigurationSchema, localProjectSettingsSchema, type Command, type Project, type Request, type Response } from '../../../packages/contracts/src/index.js';
 import { Store } from './persistence/store.js';
 import { digest, FactoryError, fail, Workflow } from './workflows/engine.js';
 import { FakeAgent } from './agents/fake.js';
@@ -160,7 +160,7 @@ export class FactoryService {
         return this.store.transaction(() => {
           if (this.store.db.prepare('SELECT id FROM projects WHERE repo_path=?').get(root)) fail('CONFLICT', 'This repository is already registered.');
           const id = randomUUID();
-          this.store.db.prepare('INSERT INTO projects(id,name,repo_path,default_branch,config_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run(id, command.name, root, branch, JSON.stringify({ provider: 'fake', executionEnabled: false, trustedRepository: false, validationCommands: [], dirtyAtRegistration: dirty }), now, now);
+          this.store.db.prepare('INSERT INTO projects(id,name,repo_path,default_branch,config_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run(id, command.name, root, branch, JSON.stringify({ ...defaultAgentSettings, executionEnabled: false, trustedRepository: false, validationCommands: [], dirtyAtRegistration: dirty }), now, now);
           this.store.event('project.created', id, null, { name: command.name, dirty });
           return { id };
         });
@@ -200,7 +200,7 @@ export class FactoryService {
         let task = this.store.db.prepare('SELECT * FROM tasks WHERE request_id=?').get(request.id) as import('../../../packages/contracts/src/index.js').Task | undefined;
         if (task && task.status !== 'INBOX') fail('CONFLICT', 'This request already has a started task. Open its issue to follow progress or retry.');
         task ??= this.execute({ type: 'task.createFromRequest', requestId: request.id }) as import('../../../packages/contracts/src/index.js').Task;
-        return this.execute({ type: 'task.assign', taskId: task.id, expectedVersion: task.version, provider: command.provider, model: command.model });
+        return this.execute({ type: 'task.assign', taskId: task.id, expectedVersion: task.version, provider: command.provider, planningModel: command.planningModel, implementationModel: command.implementationModel, reviewModel: command.reviewModel });
       });
       case 'task.createFromRequest': return this.store.transaction(() => {
         const request = this.store.db.prepare('SELECT * FROM requests WHERE id=?').get(command.requestId) as Request | undefined;
@@ -208,14 +208,17 @@ export class FactoryService {
         if (request.status === 'archived') fail('INVALID_TRANSITION', 'Restore the archived request before creating a task.');
         if (this.store.db.prepare('SELECT id FROM tasks WHERE request_id=?').get(request.id)) fail('CONFLICT', 'This request already has a task.');
         const id = randomUUID();
-        this.store.db.prepare("INSERT INTO tasks (id,request_id,project_id,title,status,provider_policy_json,created_at,updated_at) VALUES (?,?,?,?,'INBOX',?,?,?)").run(id, request.id, request.project_id, request.title, JSON.stringify({ provider: 'fake', requestVersion: request.version }), now, now);
+        this.store.db.prepare("INSERT INTO tasks (id,request_id,project_id,title,status,provider_policy_json,created_at,updated_at) VALUES (?,?,?,?,'INBOX',?,?,?)").run(id, request.id, request.project_id, request.title, JSON.stringify({ ...defaultAgentSettings, requestVersion: request.version }), now, now);
         this.store.event('task.created', request.project_id, id, { requestId: request.id, requestVersion: request.version });
         return this.workflow.getTask(id);
       });
       case 'task.assign': return this.store.transaction(() => {
+        const task = this.workflow.getTask(command.taskId);
+        const project = this.store.db.prepare('SELECT * FROM projects WHERE id=?').get(task.project_id) as Project;
+        const policy = resolveAgentDefaults(agentDefaultsSchema.parse(JSON.parse(project.config_json)), command);
         this.workflow.transition(command.taskId, command.expectedVersion, 'PLANNING', 'task.assigned');
-        this.store.db.prepare('UPDATE tasks SET provider_policy_json=? WHERE id=?').run(JSON.stringify({ ...JSON.parse(this.workflow.getTask(command.taskId).provider_policy_json), provider: command.provider, model: command.model }), command.taskId);
-        return command.provider === 'codex' ? this.planning.enqueue(command.taskId) : this.plan(command.taskId);
+        this.store.db.prepare('UPDATE tasks SET provider_policy_json=? WHERE id=?').run(JSON.stringify(taskPolicySchema.parse({ ...JSON.parse(task.provider_policy_json), ...policy })), task.id);
+        return policy.provider === 'codex' ? this.planning.enqueue(task.id) : this.plan(task.id);
       });
       case 'task.reviewPlan': return this.store.transaction(() => {
         const task = this.workflow.reviewPlan(command.taskId, command.expectedVersion, command.revisionId, command.digest, command.action, command.feedback ?? '');
@@ -256,7 +259,7 @@ export class FactoryService {
           catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
         }
         this.workflow.transition(task.id, task.version, 'PLANNING', 'task.retried');
-        if (command.model) this.store.db.prepare('UPDATE tasks SET provider_policy_json=? WHERE id=?').run(JSON.stringify({ ...JSON.parse(task.provider_policy_json), model: command.model }), task.id);
+        if (command.planningModel !== undefined) this.store.db.prepare('UPDATE tasks SET provider_policy_json=? WHERE id=?').run(JSON.stringify({ ...JSON.parse(task.provider_policy_json), planningModel: command.planningModel }), task.id);
         return JSON.parse(task.provider_policy_json).provider === 'codex' ? this.planning.enqueue(task.id) : this.plan(task.id);
       });
       case 'task.answerQuestions': return this.store.transaction(() => {
