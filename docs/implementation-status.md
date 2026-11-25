@@ -68,7 +68,7 @@ The first increment covered the scaffold and Milestone 1 foundations. Native pac
 ## Delivered: cohesive Nuxt UI desktop redesign
 
 - Real Nuxt UI 4 components integrated into the existing Vue/Vite/Tauri shell, including dialogs, command palette, tabs, forms, selects, menus, tooltips, badges, alerts, disclosures, and toasts.
-- Linear-inspired compact sidebar, graphite/violet palette, clear typography and spacing, dense request/issue rows, and optional persistent light appearance.
+- Linear-inspired compact sidebar, neutral-gray/amber palette, clear typography and spacing, dense request/issue rows, and optional persistent light appearance.
 - Search by title/ID, project/priority/provider/status filters, overview navigation, list/board switching, and keyboard commands.
 - Focused request/repository dialogs and task detail tabs with a properties/checkpoint rail; request edit/archive/restore actions remain available through contextual menus.
 - Readable Git diffs with line numbers and addition/removal colors; check logs, review history, immutable digests, cancellation, and recovery retain the existing backend boundaries.

@@ -44,7 +44,7 @@ The desktop compiles and launches its Node companion over private stdio, with se
 
 ## Workspace interface
 
-The desktop uses **Nuxt UI 4**, with a Linear-inspired graphite layout, violet accents, and a persistent light appearance under **Settings → Appearance**. Requests open in an editor; issues open in a focused dialog with **Overview**, **Plan**, **Changes & checks**, **Review**, and **Activity** tabs. The properties rail keeps status and both human checkpoints visible.
+The desktop uses **Nuxt UI 4**, with a Linear-inspired neutral-gray layout, amber accents, and a persistent light appearance under **Settings → Appearance**. Requests open in an editor; issues open in a focused dialog with **Overview**, **Plan**, **Changes & checks**, **Review**, and **Activity** tabs. The properties rail keeps status and both human checkpoints visible.
 
 Search lists by title or issue ID, filter by project/priority/provider, and switch Issues between list and board views. The Overview cards open matching issue filters. Request actions live in each row’s contextual menu.
 
@@ -55,7 +55,7 @@ Search lists by title or issue ID, filter by project/priority/provider, and swit
 
 Icons are bundled locally; the interface loads no remote fonts or icon services. Theme and reduced-motion preferences are respected without changing native CSP or approval requirements.
 
-![Packaged desktop overview](docs/screenshots/ui-refresh-native.png)
+![Neutral and amber workspace](docs/screenshots/ui-amber-neutral.jpg)
 
 ## Requests and revisions
 

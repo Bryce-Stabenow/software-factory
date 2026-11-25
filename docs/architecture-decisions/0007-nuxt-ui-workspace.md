@@ -8,7 +8,7 @@ The factory needs a coherent daily-use interface with the compact navigation and
 
 ## Decision
 
-Use Nuxt UI 4’s Vue/Vite integration rather than migrating the application to Nuxt. A root UApp supplies overlays/toasts. Use shared Nuxt UI primitives for forms, dialogs, menus, tabs, badges, disclosures, and command search. Keep layout and typography in one tokenized stylesheet, with a graphite default and a locally persisted light appearance.
+Use Nuxt UI 4’s Vue/Vite integration rather than migrating the application to Nuxt. A root UApp supplies overlays/toasts. Use shared Nuxt UI primitives for forms, dialogs, menus, tabs, badges, disclosures, and command search. Keep layout and typography in one tokenized stylesheet, with neutral grays and amber accents by default, plus a locally persisted light appearance.
 
 Bundle Lucide icons at build time, scanning both Vue and TypeScript icon declarations. Use system font fallbacks without external requests. Leave native CSP and interpreter-based frontend schema validation intact.
 

@@ -107,3 +107,8 @@ The redesigned renderer uses **Nuxt UI 4.13.1** with its Vue/Vite plugin, Tailwi
 - Native screenshots: [overview](screenshots/ui-refresh-native.png), [plan](screenshots/ui-refresh-plan.png), and [worktree diff](screenshots/ui-refresh-changes.png). The simulation fixture is visibly identified. The accepted greeting fixture contains the real Codex implementation/repair/review evidence from the prior milestone.
 
 The refreshed ZIP remains locally ad-hoc signed and verified, without notarization. Its current checksum is recorded in `release/release.json` and the adjacent SHA-256 sidecar.
+
+
+### Default neutral and amber palette
+
+Nuxt UI now defaults to `neutral: 'neutral'` and `primary: 'amber'`. Shared layout tokens use neutral grays, amber 700 for light-theme primary controls, and amber 400 with dark text for dark-theme primary controls. Logo, project marks, selection, focus, and diff hunk accents use the same theme tokens. Both themes were visually verified in the browser; production renderer/typechecking and the signed native package build passed. Preview: [neutral and amber](screenshots/ui-amber-neutral.jpg).

@@ -38,4 +38,4 @@ function developmentService(): Plugin {
     },
   };
 }
-export default defineConfig({ plugins: [vue(), ui({ colorMode: false, router: false, autoImport: false, components: { dts: 'src/components.d.ts' }, ui: { colors: { primary: 'violet', neutral: 'zinc' } }, icon: { clientBundle: { scan: { globInclude: ['**/*.{vue,ts}'] } } } }), developmentService()], clearScreen: false, server: { port: 1420, strictPort: true, host: '127.0.0.1' }, build: { target: 'es2022' } });
+export default defineConfig({ plugins: [vue(), ui({ colorMode: false, router: false, autoImport: false, components: { dts: 'src/components.d.ts' }, ui: { colors: { primary: 'amber', neutral: 'neutral' } }, icon: { clientBundle: { scan: { globInclude: ['**/*.{vue,ts}'] } } } }), developmentService()], clearScreen: false, server: { port: 1420, strictPort: true, host: '127.0.0.1' }, build: { target: 'es2022' } });
