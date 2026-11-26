@@ -1,12 +1,17 @@
 import { CodexError } from '../agents/rpc.js';
 import { randomUUID } from 'node:crypto';
 
-// Shared by planning, implementation and validation: two workers globally.
+// One application-wide pool shared by all projects and stages.
 export class RunPool {
   readonly ownerId = randomUUID();
   private active = 0;
   private queue: { start: () => void; signal: AbortSignal; priority: number; queuedAt: number }[] = [];
   constructor(private limit = 2) {}
+  setLimit(limit: number) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 32) throw new Error('Worker limit must be an integer from 1 to 32.');
+    this.limit = limit;
+    this.pump();
+  }
   acquire(signal: AbortSignal, priority = 'normal', queuedAt = Date.now()): Promise<() => void> {
     return new Promise((resolve, reject) => {
       const abort = () => { this.queue = this.queue.filter(entry => entry !== entryForRun); reject(new CodexError('CANCELLED', 'Queued work was stopped.')); };

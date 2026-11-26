@@ -758,3 +758,14 @@ test('defaults-only settings retain exact YAML and final review evidence', async
   assert.equal(after.tasks[0].status, 'FINAL_REVIEW');
   assert.equal(after.tasks[0].provider_policy_json, before.tasks[0].provider_policy_json);
 });
+
+test('application attempt limit governs existing tasks and can be raised for an explicit retry', async t => {
+  const h = await setup(t, { implementer: { async implement() { throw new Error('Fixture implementation failed'); } } });
+  h.call({ type: 'settings.update', settings: { workerLimit: 2, maxImplementationAttempts: 1 } });
+  const task = await h.makeTask(); h.approve(task); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'BLOCKED');
+  assert.throws(() => h.resume(h.snapshot().tasks[0], 'implement'), /attempt limit/);
+  h.call({ type: 'settings.update', settings: { workerLimit: 2, maxImplementationAttempts: 3 } });
+  h.resume(h.snapshot().tasks[0], 'implement'); await h.service.builds.idle();
+  assert.equal((h.store.db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE stage='implement' AND implementation_started=1").get() as { n: number }).n, 2);
+});

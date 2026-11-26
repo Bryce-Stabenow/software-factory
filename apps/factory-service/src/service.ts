@@ -21,6 +21,7 @@ import { childEnvironment, CodexError } from './agents/rpc.js';
 
 export class FactoryService {
   readonly workflow: Workflow;
+  readonly pool: RunPool;
   readonly adapter = new FakeAgent();
   readonly planning: PlanningJobs;
   readonly builds: BuildJobs;
@@ -29,7 +30,7 @@ export class FactoryService {
   private codexHealth: ProviderHealth = { id: 'codex', available: false, authenticated: false, message: 'Not checked. Check the local Codex CLI connection in Settings.' };
   constructor(readonly store: Store, options: { planner?: PlannerAdapter; implementer?: ImplementationAdapter; validator?: ValidationAdapter; reviewer?: ReviewAdapter; dataDir?: string; workspaceRoot?: string } = {}) {
     this.workflow = new Workflow(store);
-    const dataDir = options.dataDir ?? resolve('.factory/service'), pool = new RunPool();
+    const dataDir = options.dataDir ?? resolve('.factory/service'), pool = this.pool = new RunPool(store.applicationSettings().workerLimit);
     this.operations = new Operations(store, dataDir);
     this.planning = new PlanningJobs(store, this.workflow, dataDir, options.planner, pool);
     this.builds = new BuildJobs(store, this.workflow, new WorkspaceManager(store, options.workspaceRoot ?? defaultWorkspaceRoot(dataDir)), dataDir, pool, options.implementer, options.validator, options.reviewer);
@@ -83,6 +84,16 @@ export class FactoryService {
   private execute(command: Command): unknown {
     const now = new Date().toISOString();
     switch (command.type) {
+      case 'settings.get': return this.store.applicationSettings();
+      case 'settings.update': {
+        const settings = this.store.transaction(() => {
+          const saved = this.store.saveApplicationSettings(command.settings);
+          this.store.event('settings.updated', null, null, saved);
+          return saved;
+        });
+        this.pool.setLimit(settings.workerLimit);
+        return settings;
+      }
       case 'diagnostics.get': return this.operations.diagnostics(this.codexHealth);
       case 'diagnostics.export': return this.operations.exportDiagnostics(this.codexHealth);
       case 'backup.create': case 'storage.open': fail('INVALID_INPUT', 'This operation requires the asynchronous command handler.');

@@ -66,7 +66,7 @@ test('support diagnostics contain no request content, paths, source, credentials
   const h = setup(t); const request = h.create(), task = h.call<Task>({ type: 'task.createFromRequest', requestId: request.id });
   h.store.db.prepare("INSERT INTO agent_runs(id,task_id,stage,provider,status,attempt,started_at,error_code,summary) VALUES (?,?,'plan','codex','failed',1,?,'PROVIDER_ERROR',?)").run(randomUUID(), task.id, new Date().toISOString(), 'password=hidden private transcript');
   const report = h.call<Diagnostics>({ type: 'diagnostics.get' });
-  assert.equal(report.storage.integrity, 'ok'); assert.equal(report.storage.schemaVersion, 7); assert.equal(report.counts.openRequests, 1); assert.equal(report.recentErrors[0].code, 'PROVIDER_ERROR');
+  assert.equal(report.storage.integrity, 'ok'); assert.equal(report.storage.schemaVersion, 8); assert.equal(report.counts.openRequests, 1); assert.equal(report.recentErrors[0].code, 'PROVIDER_ERROR');
   const serialized = JSON.stringify(report); assert.doesNotMatch(serialized, /Private|private-repo|DB_PASSWORD|do-not-export|hidden|transcript|\/Users\//);
   const exported = h.call<StoredExport>({ type: 'diagnostics.export' });
   const bytes = readFileSync(exported.path); assert.equal(createHash('sha256').update(bytes).digest('hex'), exported.sha256);
@@ -91,7 +91,7 @@ test('migration 6 preserves pre-existing requests and task request versions acro
   const h = setup(t); const request = h.create(); h.call({ type: 'task.createFromRequest', requestId: request.id });
   // Reconstruct the exact pre-migration shape in a separate fixture, preserving historical tables.
   const path = join(h.directory, 'legacy.db'); h.store.db.exec(`VACUUM INTO '${path.replaceAll("'", "''")}'`);
-  const legacy = new Database(path); legacy.exec('DROP TRIGGER immutable_request_revision_update;DROP TRIGGER immutable_request_revision_delete;DROP TABLE request_revisions;DROP TABLE initialization_runs;ALTER TABLE agent_runs DROP COLUMN implementation_started;DELETE FROM schema_migrations WHERE version>=6'); legacy.close();
+  const legacy = new Database(path); legacy.exec('DROP TRIGGER immutable_request_revision_update;DROP TRIGGER immutable_request_revision_delete;DROP TABLE request_revisions;DROP TABLE application_settings;DROP TABLE initialization_runs;ALTER TABLE agent_runs DROP COLUMN implementation_started;DELETE FROM schema_migrations WHERE version>=6'); legacy.close();
   const migrated = new Store(path); const snapshot = migrated.snapshot();
   assert.equal(snapshot.requestRevisions.length, 1); assert.equal(migrated.requestForTask(snapshot.tasks[0]).title, 'Private feature title');
   assert.equal(migrated.db.pragma('foreign_key_check').length, 0); migrated.close();
@@ -130,4 +130,41 @@ test('a planning enqueue failure rolls back task creation while preserving the s
   assert.equal(h.snapshot().requests.length, 1);
   assert.equal(h.snapshot().tasks.length, 0);
   assert.equal(h.snapshot().events.filter(event => event.type === 'task.created').length, 0);
+});
+
+test('application limits validate, persist through restart, and survive backups', async t => {
+  const h = setup(t);
+  assert.deepEqual(h.call({ type: 'settings.get' }), { workerLimit: 2, maxImplementationAttempts: 2 });
+  for (const settings of [{ workerLimit: 0, maxImplementationAttempts: 2 }, { workerLimit: 2.5, maxImplementationAttempts: 2 }, { workerLimit: 33, maxImplementationAttempts: 2 }, { workerLimit: 2, maxImplementationAttempts: 0 }, { workerLimit: 2, maxImplementationAttempts: 21 }]) {
+    const result = h.service.dispatch({ type: 'settings.update', settings });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.error.code, 'INVALID_INPUT');
+  }
+  const settings = { workerLimit: 4, maxImplementationAttempts: 7 };
+  assert.deepEqual(h.call({ type: 'settings.update', settings }), settings);
+  const reopened = new Store(join(h.directory, 'factory.db'));
+  try {
+    const service = new FactoryService(reopened, { dataDir: h.directory });
+    assert.deepEqual(service.dispatch({ type: 'settings.get' }), { ok: true, data: settings });
+    const held = await Promise.all(Array.from({ length: 4 }, () => service.pool.acquire(new AbortController().signal)));
+    held.forEach(release => release());
+    await Promise.all([service.planning.close(), service.builds.close(), service.operations.close()]);
+  } finally { reopened.close(); }
+  const backup = await h.service.handle({ type: 'backup.create' });
+  assert.ok(backup.ok);
+  const destination = join(h.directory, 'restored-settings');
+  await restoreBackup((backup.data as StoredExport).path, destination);
+  const restored = new Store(join(destination, 'factory.db'));
+  try { assert.deepEqual(restored.applicationSettings(), settings); } finally { restored.close(); }
+});
+
+test('schema 7 databases gain default application limits without changing project configuration', t => {
+  const h = setup(t);
+  const before = h.store.db.prepare('SELECT config_json FROM projects').get();
+  h.store.db.exec('DROP TABLE application_settings; DELETE FROM schema_migrations WHERE version=8;');
+  const migrated = new Store(join(h.directory, 'factory.db'));
+  try {
+    assert.deepEqual(migrated.applicationSettings(), { workerLimit: 2, maxImplementationAttempts: 2 });
+    assert.deepEqual(migrated.db.prepare('SELECT config_json FROM projects').get(), before);
+  } finally { migrated.close(); }
 });

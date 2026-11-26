@@ -1,3 +1,4 @@
+import { applicationSettingsSchema, defaultApplicationSettings, type ApplicationSettings } from '../../../../packages/contracts/src/index.js';
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -34,7 +35,7 @@ export class Store {
     this.db.pragma('busy_timeout = 5000');
     this.db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
     const current = this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as { version: number | null };
-    if ((current.version ?? 0) > 7) throw new Error('Database schema is newer than this service');
+    if ((current.version ?? 0) > 8) throw new Error('Database schema is newer than this service');
     if (!current.version) this.transaction(() => {
       this.db.exec(migration);
       this.db.prepare('INSERT INTO schema_migrations VALUES (1, ?)').run(new Date().toISOString());
@@ -85,6 +86,20 @@ export class Store {
         CREATE TABLE initialization_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), workspace_id TEXT NOT NULL REFERENCES workspaces(id), run_id TEXT NOT NULL REFERENCES agent_runs(id), source_sha TEXT NOT NULL, file_digest TEXT NOT NULL, config_digest TEXT NOT NULL, status TEXT NOT NULL, log_text TEXT NOT NULL DEFAULT '', reason TEXT, results_json TEXT NOT NULL DEFAULT '[]', started_at TEXT NOT NULL, finished_at TEXT);
         INSERT INTO schema_migrations VALUES (7, strftime('%Y-%m-%dT%H:%M:%fZ','now'));`);
     });
+    if ((current.version ?? 0) < 8) this.transaction(() => {
+      this.db.exec(`CREATE TABLE application_settings (id INTEGER PRIMARY KEY CHECK(id=1), body_json TEXT NOT NULL);
+        INSERT INTO schema_migrations VALUES (8, strftime('%Y-%m-%dT%H:%M:%fZ','now'));`);
+      this.db.prepare('INSERT INTO application_settings VALUES (1,?)').run(JSON.stringify(defaultApplicationSettings));
+    });
+  }
+  applicationSettings(): ApplicationSettings {
+    const row = this.db.prepare('SELECT body_json FROM application_settings WHERE id=1').get() as { body_json: string };
+    return applicationSettingsSchema.parse(JSON.parse(row.body_json));
+  }
+  saveApplicationSettings(settings: ApplicationSettings) {
+    const parsed = applicationSettingsSchema.parse(settings);
+    this.db.prepare('UPDATE application_settings SET body_json=? WHERE id=1').run(JSON.stringify(parsed));
+    return parsed;
   }
   recordRequest(id: string) {
     const request = this.db.prepare('SELECT * FROM requests WHERE id=?').get(id) as Request;

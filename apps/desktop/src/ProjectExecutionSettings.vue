@@ -18,7 +18,7 @@ function tabKey(event: KeyboardEvent, index: number) {
   formElement.value?.querySelector<HTMLElement>('#project-tab-' + tab.value)?.focus();
 }
 async function focusError(panel: string, selector = 'input, select, button') { tab.value = panel; await nextTick(); formElement.value?.querySelector<HTMLElement>(`[data-panel="${panel}"] :is(${selector})`)?.focus(); }
-const timeout = ref(15), attempts = ref(2);
+const timeout = ref(15);
 const sections = ref<{ key: 'worktree_init' | 'verification'; title: string; description: string; maximum: number; commands: CheckDraft[] }[]>([
   { key: 'worktree_init', title: 'Worktree initialization', description: 'Runs in order when a task worktree is first prepared, before implementation. Install dependencies and prepare ignored local artifacts here. Setup failures pause the task without a code repair.', maximum: 1800, commands: [] },
   { key: 'verification', title: 'Verification', description: 'Runs after implementation and every repair. All commands must succeed on the exact commit before independent review and your acceptance. Verification runs without network access.', maximum: 300, commands: [] },
@@ -31,7 +31,7 @@ async function load() {
     defaults.value = { provider: result.local.provider, planningModel: result.local.planningModel, implementationModel: result.local.implementationModel, reviewModel: result.local.reviewModel };
     enabled.value = result.local.executionEnabled; trusted.value = result.local.trustedRepository;
     networkAllowed.value = result.local.initializationNetworkAllowed; network.value = result.configuration?.worktree_init.network ?? false;
-    timeout.value = result.local.implementationTimeoutMs / 60000; attempts.value = result.local.maxImplementationAttempts;
+    timeout.value = result.local.implementationTimeoutMs / 60000;
     sections.value[0].commands = (result.configuration?.worktree_init.commands ?? []).map(row => ({ name: row.name, command: formatCheckCommand(row.run), timeoutSeconds: row.timeout_seconds }));
     sections.value[1].commands = result.configuration ? result.configuration.verification.commands.map(row => ({ name: row.name, command: formatCheckCommand(row.run), timeoutSeconds: row.timeout_seconds })) : result.legacyVerification.map(row => ({ name: row.name, command: formatCheckCommand(row.argv), timeoutSeconds: row.timeoutMs / 1000 }));
   } catch (cause) { error.value = (cause as Error).message; }
@@ -45,8 +45,8 @@ async function save() {
       const invalid = formElement.value?.querySelector<HTMLInputElement>(`[data-panel="${panel}"] input:invalid`);
       if (invalid) { tab.value = panel; await nextTick(); invalid.focus(); invalid.reportValidity(); return; }
     }
-    const localResult = localProjectSettingsSchema.safeParse({ ...defaults.value, executionEnabled: enabled.value, trustedRepository: trusted.value, implementationTimeoutMs: Math.round(timeout.value * 60000), maxImplementationAttempts: attempts.value, initializationNetworkAllowed: networkAllowed.value });
-    if (!localResult.success) { await focusError('local'); throw new Error('Choose valid defaults, a timeout from 1–30 minutes, and an attempt limit from 1–5.'); }
+    const localResult = localProjectSettingsSchema.safeParse({ ...defaults.value, executionEnabled: enabled.value, trustedRepository: trusted.value, implementationTimeoutMs: Math.round(timeout.value * 60000), initializationNetworkAllowed: networkAllowed.value });
+    if (!localResult.success) { await focusError('local'); throw new Error('Choose valid defaults and a timeout from 1–30 minutes.'); }
     const local = localResult.data;
     if (enabled.value && !trusted.value) { await focusError('local'); throw new Error('Trust this repository before enabling implementation.'); }
     if (enabled.value && !sections.value[1].commands.length) { await focusError('verification'); throw new Error('Add a verification command before enabling implementation.'); }
@@ -101,7 +101,7 @@ async function save() {
       <UCheckbox v-model="networkAllowed" :disabled="busy || !trusted" label="Allow network access during initialization" description="Required when initialization requests network access in YAML. This permission is local and is never transferred through Git." />
       <USwitch v-model="enabled" :disabled="busy || !trusted" label="Enable implementation after plan approval" description="Code changes still require an explicitly approved real Codex plan." />
       <UAlert v-if="enabled && !sections[1].commands.length" color="warning" variant="subtle" description="Add verification commands before enabling implementation." />
-      <div class="form-columns"><UFormField label="Implementation timeout (minutes)"><UInput v-model.number="timeout" type="number" :min="1" :max="30" :disabled="busy" required class="w-full" /></UFormField><UFormField label="Implementation attempt limit"><UInput v-model.number="attempts" type="number" :min="1" :max="5" :disabled="busy" required class="w-full" /></UFormField></div>
+      <div class="form-columns"><UFormField label="Implementation timeout (minutes)"><UInput v-model.number="timeout" type="number" :min="1" :max="30" :disabled="busy" required class="w-full" /></UFormField></div>
       </div>
     </template>
     <UAlert v-if="error" color="error" variant="subtle" :description="error" /><div class="setup-save-row"><UButton color="neutral" variant="ghost" :disabled="busy || loading" @click="load">Reload file</UButton><UButton type="submit" size="sm" :loading="busy" :disabled="loading || !state || !!state.error">Save project settings</UButton></div>

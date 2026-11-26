@@ -43,7 +43,7 @@ export class BuildJobs {
     if (this.closing) fail('CONFLICT', 'The factory service is shutting down.');
     return this.store.transaction(() => {
       let task = this.workflow.getTask(taskId, expectedVersion);
-      const config = this.assertAllowed(task);
+      this.assertAllowed(task);
       this.assertPriorProcessStopped(taskId);
       if (this.jobs.has(taskId) || this.store.db.prepare("SELECT id FROM agent_runs WHERE task_id=? AND status IN ('queued','starting','running','waiting_permission','stopping')").get(taskId)) fail('CONFLICT', 'This task already has pending or active work.');
       if (stage === 'repair') {
@@ -65,7 +65,7 @@ export class BuildJobs {
         task = this.workflow.transition(task.id, task.version, 'QUEUED_FOR_BUILD', 'build.setup_retried');
       }
       const attempts = this.store.db.prepare('SELECT COUNT(*) AS n FROM agent_runs WHERE task_id=? AND stage=? AND approved_plan_id=? AND implementation_started=1').get(task.id, stage, task.approved_plan_revision_id) as { n: number };
-      if (stage === 'implement' && attempts.n >= config.maxImplementationAttempts) fail('POLICY_DENIED', 'The implementation attempt limit for this plan is exhausted. Preserve the worktree and revise the request or raise the project limit before retrying.');
+      if (stage === 'implement' && attempts.n >= this.store.applicationSettings().maxImplementationAttempts) fail('POLICY_DENIED', 'The implementation attempt limit for this plan is exhausted. Preserve the worktree and revise the request or raise the application limit in Settings before retrying.');
       const id = randomUUID(), plan = this.store.plan(task.approved_plan_revision_id!)!;
       this.store.db.prepare("INSERT INTO agent_runs(id,task_id,stage,provider,status,attempt,started_at,owner_id,owner_pid,heartbeat_at,recovery_stage,approved_plan_id,approved_plan_digest) VALUES (?,?,?,'codex','queued',?,?,?,?,?,?,?,?)").run(id, task.id, ['review','initialize'].includes(stage) ? 'validate' : stage, attempts.n + 1, new Date().toISOString(), this.pool.ownerId, process.pid, new Date().toISOString(), stage, plan.id, plan.sha256_digest);
       if (stage === 'implement') this.store.db.prepare('UPDATE agent_runs SET implementation_started=0 WHERE id=?').run(id);
@@ -239,6 +239,10 @@ export class BuildJobs {
   private async implement(job: BuildJob, config: ExecutionConfig, repair: boolean) {
     const status = repair ? 'REPAIRING' : 'BUILDING';
     const task = this.guard(job, status), workspace = this.workspaces.verify(task), plan = this.store.plan(task.approved_plan_revision_id!)!;
+    if (!repair) {
+      const used = this.store.db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE task_id=? AND stage='implement' AND approved_plan_id=? AND implementation_started=1 AND id<>?").get(task.id, plan.id, job.id) as { n: number };
+      if (used.n >= this.store.applicationSettings().maxImplementationAttempts) fail('POLICY_DENIED', 'The application implementation attempt limit is exhausted. Raise it in Settings before explicitly retrying.');
+    }
     this.store.db.prepare('UPDATE agent_runs SET implementation_started=1 WHERE id=?').run(job.id);
     const request = this.store.requestForTask(task);
     const failures = repair ? {

@@ -50,8 +50,16 @@ export interface InitializationRun { id: string; task_id: string; workspace_id: 
 const version = z.number().int().positive();
 const id = z.string().uuid();
 const text = z.string().trim().min(1).max(20000);
+export const applicationSettingsSchema = z.object({
+  workerLimit: z.number().int().min(1).max(32),
+  maxImplementationAttempts: z.number().int().min(1).max(20),
+}).strict();
+export type ApplicationSettings = z.infer<typeof applicationSettingsSchema>;
+export const defaultApplicationSettings: ApplicationSettings = { workerLimit: 2, maxImplementationAttempts: 2 };
 export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('snapshot') }),
+  z.object({ type: z.literal('settings.get') }),
+  z.object({ type: z.literal('settings.update'), settings: applicationSettingsSchema }),
   z.object({ type: z.literal('events.list'), afterSequence: z.number().int().nonnegative() }),
   z.object({ type: z.literal('project.add'), path: text, name: z.string().trim().min(1).max(120) }),
   z.object({ type: z.literal('project.configuration.get'), projectId: id }),

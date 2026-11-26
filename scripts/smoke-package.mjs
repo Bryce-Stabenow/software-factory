@@ -47,7 +47,7 @@ try {
   await current.call({ type: 'request.archive', requestId: request.id, expectedVersion: 2, archived: true });
   await current.call({ type: 'task.assign', taskId: task.id, expectedVersion: task.version, provider: 'fake' });
   const snapshot = await current.call({ type: 'snapshot' }); assert.match(snapshot.plans[0].body_json, /Original scope preserved/); assert.equal(snapshot.requests[0].status,'archived');
-  const diagnostics = await current.call({ type: 'diagnostics.get' }); assert.equal(diagnostics.application.packaged,true); assert.equal(diagnostics.storage.integrity,'ok'); assert.equal(diagnostics.storage.schemaVersion,7);
+  const diagnostics = await current.call({ type: 'diagnostics.get' }); assert.equal(diagnostics.application.packaged,true); assert.equal(diagnostics.storage.integrity,'ok'); assert.equal(diagnostics.storage.schemaVersion,8);
   const report = await current.call({ type: 'diagnostics.export' }); assert.doesNotMatch(readFileSync(report.path,'utf8'), /Original scope|Updated scope|repository|empty-home/);
   const backup = await current.call({ type: 'backup.create' }); assert.ok(existsSync(backup.path));
   await current.close(); current = undefined; assert.equal(existsSync(join(data,'service.lock')),false);
