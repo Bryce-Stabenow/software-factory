@@ -123,6 +123,11 @@ export function reconcileSelectedFile(files: DiffSection[], selected: string | n
   return files.some(file => file.path === selected) ? selected : files[0]?.path ?? null;
 }
 
+/** Returns whether a captured section has text or hunk content beyond Git metadata. */
+export function hasDiffContent(section: DiffSection): boolean {
+  return section.lines.some(line => line.kind === 'hunk' || line.kind === 'context' || line.kind === 'add' || line.kind === 'remove');
+}
+
 export interface DiffPair {
   old: DiffLine | null;
   next: DiffLine | null;
