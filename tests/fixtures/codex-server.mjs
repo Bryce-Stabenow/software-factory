@@ -9,6 +9,7 @@ let prompt = '';
 let reviewing = false;
 let implementing = false;
 let cwd;
+let verificationAvailable = false;
 const plan = () => ({ summary: 'Add a formal greeting', assumptions: ['Existing behavior stays the default'], questions: mode === 'questions' && prompt.includes('Clarification answers: []') ? ['Should the formal prefix be configurable?'] : [], steps: ['Update greeting.ts', 'Add coverage'], affectedAreas: ['greeting.ts'], acceptanceCriteria: ['The old call still works'], testStrategy: ['Add unit tests'], risks: ['Tests have not run'] });
 const complete = () => {
   if (mode === 'hang' || mode === 'permission') return;
@@ -19,7 +20,19 @@ const complete = () => {
 const lines = createInterface({ input: process.stdin });
 lines.on('line', line => {
   const frame = JSON.parse(line);
-  if (!frame.method && frame.id === 'write-request') { assert.equal(frame.result.success, true); complete(); return; }
+  if (!frame.method && frame.id === 'verification-request') {
+    assert.equal(frame.result.success, true);
+    const result = JSON.parse(frame.result.contentItems[0].text);
+    if (!result.passed) send({ id: 'verification-request', method: 'item/tool/call', params: { threadId, turnId, tool: 'run_verification', arguments: {} } });
+    else complete();
+    return;
+  }
+  if (!frame.method && frame.id === 'write-request') {
+    assert.equal(frame.result.success, true);
+    if (verificationAvailable && mode !== 'verification-skip') send({ id: 'verification-request', method: 'item/tool/call', params: { threadId, turnId, tool: 'run_verification', arguments: mode === 'verification-args' ? { command: ['sh', '-c', 'do not run'] } : {} } });
+    else complete();
+    return;
+  }
   if (!frame.method && frame.id === 'read-request') {
     assert.equal(frame.result.success, true); assert.match(frame.result.contentItems[0].text, /greet/);
     if (implementing) send({ id: 'write-request', method: 'item/tool/call', params: { threadId, turnId, tool: 'write_repository_file', arguments: { path: 'greeting.ts', content: 'export const greet = (name: string) => `Hello, ${name}!`;\n', expectedDigest: JSON.parse(frame.result.contentItems[0].text).digest } } });
@@ -31,9 +44,10 @@ lines.on('line', line => {
   if (frame.method === 'model/list') send({ id: frame.id, result: { data: [{ model: 'fixture-model', displayName: 'Fixture model', isDefault: true }] } });
   if (frame.method === 'config/read') send({ id: frame.id, result: { config: { features: { shell_tool: mode === 'unsafe-config' }, mcp_servers: mode === 'inherited-mcp' ? { fixture: { enabled: process.argv.includes('mcp_servers.fixture.enabled=false') ? false : true } } : {} } } });
   if (frame.method === 'thread/start') {
+    verificationAvailable = frame.params.dynamicTools.some(tool => tool.name === 'run_verification');
     implementing = frame.params.dynamicTools.some(tool => tool.name === 'write_repository_file'); cwd = frame.params.cwd;
     assert.equal(frame.params.sandbox, implementing ? 'workspace-write' : 'read-only'); assert.equal(frame.params.approvalPolicy, 'never'); assert.equal(frame.params.ephemeral, true);
-    assert.deepEqual(frame.params.dynamicTools.map(tool => tool.name), implementing ? ['list_repository_files', 'read_repository_file', 'write_repository_file', 'delete_repository_file'] : ['list_repository_files', 'read_repository_file']);
+    assert.deepEqual(frame.params.dynamicTools.map(tool => tool.name), implementing ? ['list_repository_files', 'read_repository_file', 'write_repository_file', 'delete_repository_file', ...(verificationAvailable ? ['run_verification'] : [])] : ['list_repository_files', 'read_repository_file']);
     if (implementing) assert.deepEqual(frame.params.config, { sandbox_workspace_write: { writable_roots: [cwd], network_access: false, exclude_slash_tmp: true, exclude_tmpdir_env_var: true } });
     send({ id: frame.id, result: { thread: { id: threadId }, approvalPolicy: 'never', sandbox: { type: mode === 'unsafe' ? 'dangerFullAccess' : implementing ? 'workspaceWrite' : 'readOnly', networkAccess: mode === 'unsafe-network', ...(implementing ? { writableRoots: mode === 'unsafe-roots' ? [cwd, '/'] : mode === 'implicit-cwd' ? [] : [cwd], excludeSlashTmp: mode !== 'unsafe-tmp', excludeTmpdirEnvVar: true } : {}) } } });
   }

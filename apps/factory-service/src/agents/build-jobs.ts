@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { implementationSchema, executionConfigSchema, type ExecutionConfig, type Project, type Request, type Task, reviewSchema, type WorkspaceDetails } from '../../../../packages/contracts/src/index.js';
 import type { Store } from '../persistence/store.js';
 import { digest, fail, FactoryError, Workflow } from '../workflows/engine.js';
-import { CodexReviewer, CodexImplementer, type ReviewAdapter, type ImplementationAdapter, type PlannerEvent } from './codex.js';
+import { CodexReviewer, CodexImplementer, type ReviewAdapter, type ImplementationAdapter, type PlannerEvent, type VerificationResult } from './codex.js';
 import { CodexError } from './rpc.js';
 import { allowedPath, createPlanningSnapshot, snapshotDigest, redact } from './snapshot.js';
 import { EvidenceManager } from '../checks/evidence.js';
@@ -16,7 +16,7 @@ import { RunPool } from '../scheduler/run-pool.js';
 export function executionConfig(project: Project): ExecutionConfig {
   return executionConfigSchema.parse({ executionEnabled: false, trustedRepository: false, validationCommands: [], ...JSON.parse(project.config_json) });
 }
-type BuildJob = { id: string; taskId: string; stage: 'implement' | 'validate' | 'review' | 'repair' | 'initialize'; controller: AbortController; done: Promise<void>; finish: () => void; queuedAt: number; configDigest?: string };
+type BuildJob = { id: string; taskId: string; stage: 'implement' | 'validate' | 'review' | 'repair' | 'initialize'; controller: AbortController; done: Promise<void>; finish: () => void; queuedAt: number; configDigest?: string; verifiedHead?: string };
 export class BuildJobs {
   private jobs = new Map<string, BuildJob>();
   private closing = false;
@@ -131,10 +131,15 @@ export class BuildJobs {
       while (true) {
         task = this.workflow.getTask(task.id);
         this.workflow.transition(task.id, task.version, 'VALIDATING', 'validation.started');
-        if (!reuseValidationRun) this.nextRun(job, 'validate');
+        if (!reuseValidationRun && !job.verifiedHead) this.nextRun(job, 'validate');
         reuseValidationRun = false;
         let repairReason: string | undefined;
-        try { await this.validate(job, config); this.finishRun(job); }
+        try {
+          const workspace = this.workspaces.verify(this.workflow.getTask(job.taskId));
+          if (job.verifiedHead !== this.workspaces.head(workspace) || this.workspaces.changed(workspace).length) await this.validate(job, config);
+          job.verifiedHead = undefined;
+          this.finishRun(job);
+        }
         catch (error) {
           if (!(error instanceof CodexError) || !['VALIDATION_FAILED', 'VALIDATION_TIMEOUT'].includes(error.code) || job.controller.signal.aborted) throw error;
           this.finishRun(job, 'failed', error.message);
@@ -236,7 +241,7 @@ export class BuildJobs {
     this.store.db.prepare("INSERT INTO agent_runs(id,task_id,stage,provider,status,attempt,started_at,owner_id,owner_pid,heartbeat_at,recovery_stage,approved_plan_id,approved_plan_digest) VALUES (?,?,?,'codex','running',?,?,?,?,?,?,?,?)").run(job.id, task.id, stage, count.n + 1, new Date().toISOString(), this.pool.ownerId, process.pid, new Date().toISOString(), stage, plan.id, plan.sha256_digest);
     this.store.event('run.started', task.project_id, task.id, { runId: job.id, stage, attempt: count.n + 1 });
   }
-  private async implement(job: BuildJob, config: ExecutionConfig, repair: boolean) {
+  private async implement(job: BuildJob, config: ResolvedExecutionConfig, repair: boolean) {
     const status = repair ? 'REPAIRING' : 'BUILDING';
     const task = this.guard(job, status), workspace = this.workspaces.verify(task), plan = this.store.plan(task.approved_plan_revision_id!)!;
     if (!repair) {
@@ -245,32 +250,58 @@ export class BuildJobs {
     }
     this.store.db.prepare('UPDATE agent_runs SET implementation_started=1 WHERE id=?').run(job.id);
     const request = this.store.requestForTask(task);
-    const failures = repair ? {
+    const failures = {
+      previousRuns: this.store.db.prepare("SELECT stage,status,error_code,summary FROM agent_runs WHERE task_id=? AND id<>? ORDER BY rowid DESC LIMIT 8").all(task.id, job.id),
+      workspace: { head: this.workspaces.head(workspace), changedFiles: this.workspaces.changed(workspace) },
       checks: this.store.db.prepare("SELECT name,commit_sha,status,log_text,reason FROM validation_runs WHERE task_id=? ORDER BY rowid DESC LIMIT 12").all(task.id),
       review: this.store.db.prepare('SELECT * FROM reviews WHERE task_id=? ORDER BY rowid DESC LIMIT 1').get(task.id),
       feedback: this.store.db.prepare("SELECT feedback,commit_sha FROM approvals WHERE task_id=? AND gate='final' AND action='request_changes' ORDER BY rowid DESC LIMIT 1").get(task.id),
-    } : undefined;
+    };
     this.store.db.prepare("UPDATE reviews SET status='stale' WHERE task_id=? AND status='current'").run(task.id);
     this.store.db.prepare("UPDATE validation_runs SET status='stale',reason='Implementation or repair started; fresh validation is required.' WHERE task_id=? AND status='passed'").run(task.id);
     const stageSignal = AbortSignal.any([job.controller.signal, AbortSignal.timeout(config.implementationTimeoutMs)]);
-    const output = await this.implementer.implement({ cwd: workspace.path, model: JSON.parse(task.provider_policy_json).implementationModel ?? undefined, signal: stageSignal, timeoutMs: config.implementationTimeoutMs,
+    job.verifiedHead = undefined;
+    let verificationCalls = 0;
+    const runVerification = async (toolSignal?: AbortSignal) => {
+      const verificationSignal = toolSignal ? AbortSignal.any([stageSignal, toolSignal]) : stageSignal;
+      stageSignal.throwIfAborted(); this.guard(job, status);
+      if (++verificationCalls > 20) throw new CodexError('TOOL_LIMIT', 'Verification exceeded 20 suite runs in this implementation session.');
+      job.verifiedHead = undefined;
+      this.store.db.prepare("UPDATE validation_runs SET status='stale',reason='New implementation verification started.' WHERE task_id=? AND status='passed'").run(task.id);
+      const head = await this.workspaces.commit(task, workspace, [], verificationSignal, pid => this.event(job, { type: 'process', pid }));
+      this.guard(job, status);
+      const since = (this.store.db.prepare('SELECT COALESCE(MAX(rowid),0) AS n FROM validation_runs').get() as { n: number }).n;
+      let message: string | undefined;
+      try {
+        await this.validate(job, config, status, verificationSignal);
+        job.verifiedHead = head;
+      } catch (error) {
+        if (!(error instanceof CodexError) || !['VALIDATION_FAILED', 'VALIDATION_TIMEOUT'].includes(error.code) || verificationSignal.aborted) throw error;
+        message = error.message;
+      }
+      const checks = this.store.db.prepare('SELECT name,status,exit_code AS exitCode,log_text AS log,reason FROM validation_runs WHERE task_id=? AND rowid>? ORDER BY rowid').all(task.id, since) as VerificationResult['checks'];
+      return { passed: job.verifiedHead === head, checks, message };
+    };
+    const output = await this.implementer.implement({ cwd: workspace.path, model: JSON.parse(task.provider_policy_json).implementationModel ?? undefined, signal: stageSignal, timeoutMs: config.implementationTimeoutMs, runVerification,
       guard: () => { stageSignal.throwIfAborted(); this.guard(job, status); }, onEvent: event => this.event(job, event),
-      prompt: redact(`${repair ? 'Repair only defects in' : 'Implement'} this human-approved plan in this isolated Git worktree. Preserve existing edits. Do not reset, merge, push, deploy, run commands, edit Git metadata, or weaken tests to hide defects. The service commits and validates changes. Human feedback may clarify defects within approved scope; report limitations for new scope requiring a new plan.
+      prompt: redact(`${repair ? 'Repair only defects in' : 'Implement'} this human-approved plan in this isolated Git worktree. Preserve existing edits. Build on the current worktree and address the supplied prior failures and reviewer findings. Do not reset, merge, push, deploy, run arbitrary commands, edit Git metadata, or weaken tests to hide defects. Use run_verification to execute the configured build and checks, inspect their logs, fix failures, and rerun in this same session before finishing. The service commits each checked version; independent code review is a separate later stage. Human feedback may clarify defects within approved scope; report limitations for new scope requiring a new plan.
 Task: ${task.id}
 Base: ${workspace.base_sha}
 Approved revision: ${plan.id}
 Approved SHA-256: ${plan.sha256_digest}
 Plan: ${plan.body_json}
 Request: ${JSON.stringify({ title: request.title, body: request.body, acceptanceCriteria: JSON.parse(request.acceptance_criteria_json) })}
-Defects and human feedback: ${JSON.stringify(failures ?? null)}`),
+Configured verification: ${JSON.stringify(config.validationCommands)}
+Defects and human feedback: ${JSON.stringify(failures)}`),
     });
     const result = { ...implementationSchema.parse(JSON.parse(redact(JSON.stringify(output)))), touchedPaths: output.touchedPaths };
     this.guard(job, status);
     this.store.db.prepare('UPDATE agent_runs SET summary=? WHERE id=?').run(redact(JSON.stringify({ summary: result.summary, limitations: result.limitations })), job.id);
+    if (verificationCalls && (!job.verifiedHead || this.workspaces.changed(workspace).length || job.verifiedHead !== this.workspaces.head(workspace))) throw new CodexError('VALIDATION_FAILED', 'Implementation finished without passing verification for its final version. Resume with the captured logs.');
     const previousHead = this.workspaces.head(workspace);
     const head = await this.workspaces.commit(task, workspace, result.touchedPaths, job.controller.signal, pid => this.event(job, { type: 'process', pid }));
     this.guard(job, status);
-    if (head === previousHead || !this.workspaces.inspect(task).changedFiles.length) {
+    if ((!verificationCalls && head === previousHead) || !this.workspaces.inspect(task).changedFiles.length) {
       throw new CodexError('INVALID_IMPLEMENTATION', `${repair ? 'Repair' : 'Implementation'} produced no code changes. This attempt failed and will not proceed to validation or review. Inspect the implementation summary and limitations, then explicitly resume implementation.`);
     }
     this.store.event(repair ? 'repair.completed' : 'implementation.completed', task.project_id, task.id, { runId: job.id, commitSha: head, summary: result.summary, limitations: result.limitations });
@@ -317,26 +348,34 @@ Snapshot omitted files: ${snapshot.omitted}. Deleted files appear in the diff. I
     this.store.event('review.completed', task.project_id, task.id, { runId: job.id, commitSha: details.currentHead, verdict });
     return { ...safe, verdict };
   }
-  private async validate(job: BuildJob, config: ResolvedExecutionConfig) {
-    const task = this.guard(job, 'VALIDATING'), workspace = this.workspaces.verify(task), head = this.workspaces.head(workspace);
+  private async validate(job: BuildJob, config: ResolvedExecutionConfig, status: 'VALIDATING' | 'BUILDING' | 'REPAIRING' = 'VALIDATING', signal = job.controller.signal) {
+    const task = this.guard(job, status), workspace = this.workspaces.verify(task), head = this.workspaces.head(workspace);
     if (!config.validationCommands.length) fail('POLICY_DENIED', 'No validation commands are configured. Implementation is preserved, but checks are NOT RUN. Configure checks, inspect the worktree, and re-run validation.');
     if (this.workspaces.changed(workspace).length) fail('STALE_EVIDENCE', 'Validation requires a clean current commit.');
     const before = this.workspaces.fingerprint(workspace), configDigest = verificationDigest(config);
     for (const command of config.validationCommands) {
-      this.guard(job, 'VALIDATING');
+      signal.throwIfAborted(); this.guard(job, status);
       const id = randomUUID(), directory = join(this.dataDir, 'artifacts', task.id, id), logPath = join(directory, 'validation.log');
       mkdirSync(directory, { recursive: true, mode: 0o700 });
       this.store.transaction(() => {
         this.store.db.prepare("INSERT INTO validation_runs(id,task_id,commit_sha,name,argv_json,log_path,started_at,status,run_id,config_digest) VALUES (?,?,?,?,?,?,?,'running',?,?)").run(id, task.id, head, command.name, JSON.stringify(command.argv), logPath, new Date().toISOString(), job.id, configDigest);
         this.store.event('validation.command_started', task.project_id, task.id, { validationId: id, name: command.name, commitSha: head });
       });
-      const result = await this.validator.run({ cwd: workspace.path, temporaryDirectory: join(directory, 'temporary'), command, processId: id, signal: job.controller.signal, onProcess: pid => this.event(job, { type: 'process', pid }), onOutput: log => {
+      let result;
+      try { result = await this.validator.run({ cwd: workspace.path, temporaryDirectory: join(directory, 'temporary'), command, processId: id, signal, onProcess: pid => this.event(job, { type: 'process', pid }), onOutput: log => {
         const safe = redactLog(log).slice(0, 130000);
         writeFileSync(logPath, safe, { mode: 0o600 });
         this.store.db.prepare('UPDATE validation_runs SET log_text=? WHERE id=?').run(safe, id);
         this.store.event('validation.output', task.project_id, task.id, { validationId: id });
       } });
-      this.guard(job, 'VALIDATING');
+      } catch (error) {
+        const timedOut = error instanceof CodexError && error.code === 'VALIDATION_TIMEOUT';
+        const reason = timedOut ? 'Command exceeded its configured timeout.' : signal.aborted ? 'Verification was interrupted.' : 'Verification could not complete.';
+        this.store.db.prepare("UPDATE validation_runs SET status=?,reason=?,finished_at=? WHERE id=? AND status='running'").run(signal.aborted ? 'cancelled' : timedOut ? 'timed_out' : 'failed', reason, new Date().toISOString(), id);
+        this.store.event('validation.completed', task.project_id, task.id, { validationId: id, commitSha: head, status: timedOut ? 'timed_out' : 'failed' });
+        throw error;
+      }
+      signal.throwIfAborted(); this.guard(job, status);
       const stale = this.workspaces.head(workspace) !== head || this.workspaces.fingerprint(workspace) !== before;
       const log = redactLog(result.log).slice(0, 130000);
       const setupRequired = result.exitCode !== 0 ? validationEnvironmentFailure(log) : null;

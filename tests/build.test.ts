@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../apps/factory-service/src/persistence/store.js';
 import { FactoryService } from '../apps/factory-service/src/service.js';
+import { CodexError } from '../apps/factory-service/src/agents/rpc.js';
 import { WorkspaceFiles } from '../apps/factory-service/src/git/workspace-files.js';
 import { git, WorkspaceManager } from '../apps/factory-service/src/git/workspaces.js';
 import { digest } from '../apps/factory-service/src/workflows/engine.js';
@@ -768,4 +769,103 @@ test('application attempt limit governs existing tasks and can be raised for an 
   h.call({ type: 'settings.update', settings: { workerLimit: 2, maxImplementationAttempts: 3 } });
   h.resume(h.snapshot().tasks[0], 'implement'); await h.service.builds.idle();
   assert.equal((h.store.db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE stage='implement' AND implementation_started=1").get() as { n: number }).n, 2);
+});
+
+test('implementation verifies, fixes failures and reruns in one session before independent review', async t => {
+  let checks = 0, sessions = 0, reviews = 0;
+  const h = await setup(t, {
+    validator: { async run() { checks++; return { exitCode: checks === 1 ? 1 : 0, log: checks === 1 ? 'formal greeting assertion failed' : 'greeting tests passed' }; } },
+    implementer: { async implement(input) {
+      sessions++;
+      const files = new WorkspaceFiles(input.cwd, input.guard);
+      let before = JSON.parse(files.call('read_repository_file', { path: 'greeting.cjs' }));
+      files.call('write_repository_file', { path: 'greeting.cjs', expectedDigest: before.digest, content: implemented });
+      const failed = await input.runVerification!();
+      assert.equal(failed.passed, false); assert.match(failed.checks[0].log, /formal greeting assertion failed/);
+      before = JSON.parse(files.call('read_repository_file', { path: 'greeting.cjs' }));
+      files.call('write_repository_file', { path: 'greeting.cjs', expectedDigest: before.digest, content: implemented + '// fixed after feedback\n' });
+      assert.equal((await input.runVerification!()).passed, true);
+      return { summary: 'Implemented and verified in one session', limitations: [], touchedPaths: files.touched() };
+    } },
+    reviewer: { async review(input) {
+      reviews++; assert.equal(checks, 2); assert.match(input.prompt, /greeting tests passed/);
+      return { commitSha: input.commitSha, verdict: 'pass', summary: 'Independent review passed', findings: [] };
+    } },
+  });
+  const task = await h.makeTask(); h.approve(task); await h.service.builds.idle();
+  const snapshot = h.snapshot();
+  assert.equal(snapshot.tasks[0].status, 'FINAL_REVIEW', snapshot.tasks[0].reason ?? '');
+  assert.equal(sessions, 1); assert.equal(checks, 2); assert.equal(reviews, 1);
+  assert.equal(snapshot.runs.filter(run => run.stage === 'validate').length, 0);
+  assert.equal(snapshot.runs.filter(run => run.stage === 'repair').length, 0);
+  assert.equal(snapshot.validations.filter(check => check.status === 'passed' && check.commit_sha === snapshot.workspaces[0].head_sha).length, 1);
+});
+
+test('resumed implementation receives prior findings, checks and summaries and can verify existing changes', async t => {
+  let sessions = 0, reviews = 0;
+  const h = await setup(t, {
+    implementer: { async implement(input) {
+      sessions++;
+      if (sessions === 2) throw new Error('repair interrupted');
+      if (sessions === 3) {
+        assert.match(input.prompt, /Previously missed formal branch/);
+        assert.match(input.prompt, /Original scoped implementation/);
+        assert.match(input.prompt, /greeting tests passed/);
+        assert.match(input.prompt, /"workspace":/);
+        assert.equal((await input.runVerification!()).passed, true);
+        return { summary: 'Resumed and verified preserved implementation', limitations: [], touchedPaths: [] };
+      }
+      const files = new WorkspaceFiles(input.cwd, input.guard);
+      const before = JSON.parse(files.call('read_repository_file', { path: 'greeting.cjs' }));
+      files.call('write_repository_file', { path: 'greeting.cjs', expectedDigest: before.digest, content: implemented });
+      return { summary: 'Original scoped implementation', limitations: [], touchedPaths: files.touched() };
+    } },
+    reviewer: { async review(input) {
+      reviews++;
+      return { commitSha: input.commitSha, verdict: reviews === 1 ? 'changes_requested' : 'pass', summary: reviews === 1 ? 'Previously missed formal branch' : 'Resolved', findings: reviews === 1 ? [{ severity: 'medium', file: 'greeting.cjs', line: 1, title: 'Previously missed formal branch', rationale: 'Inspect preserved work', suggestedFix: 'Verify the formal branch' }] : [] };
+    } },
+  });
+  const task = await h.makeTask(); h.approve(task); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'BLOCKED');
+  h.resume(h.snapshot().tasks[0], 'implement'); await h.service.builds.idle();
+  assert.equal(sessions, 3); assert.equal(h.snapshot().tasks[0].status, 'FINAL_REVIEW', h.snapshot().tasks[0].reason ?? '');
+});
+
+test('edits after agent verification cannot reach review with stale checks', async t => {
+  let reviews = 0;
+  const h = await setup(t, {
+    implementer: { async implement(input) {
+      writeFileSync(join(input.cwd, 'greeting.cjs'), implemented);
+      assert.equal((await input.runVerification!()).passed, true);
+      writeFileSync(join(input.cwd, 'greeting.cjs'), implemented + '// unverified edit\n');
+      return { summary: 'Edited after verification', limitations: [], touchedPaths: ['greeting.cjs'] };
+    } },
+    reviewer: { async review(input) { reviews++; return { commitSha: input.commitSha, verdict: 'pass', summary: 'Unexpected review', findings: [] }; } },
+  });
+  const task = await h.makeTask(); h.approve(task); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'BLOCKED'); assert.equal(reviews, 0);
+  assert.match(h.snapshot().tasks[0].reason ?? '', /final version/);
+});
+
+test('verification timeout returns captured results to the same agent and does not spend a repair', async t => {
+  let calls = 0;
+  const h = await setup(t, {
+    validator: { async run(input) {
+      calls++;
+      if (calls === 1) { input.onOutput('Partial build output before timeout'); throw new CodexError('VALIDATION_TIMEOUT', 'Fixture timed out'); }
+      return { exitCode: 0, log: 'Build passed' };
+    } },
+    implementer: { async implement(input) {
+      writeFileSync(join(input.cwd, 'greeting.cjs'), implemented);
+      const timedOut = await input.runVerification!();
+      assert.equal(timedOut.passed, false); assert.equal(timedOut.checks[0].status, 'timed_out');
+      assert.match(timedOut.checks[0].log, /Partial build output/);
+      assert.equal((await input.runVerification!()).passed, true);
+      return { summary: 'Verified after timeout', limitations: [], touchedPaths: ['greeting.cjs'] };
+    } },
+  });
+  const task = await h.makeTask(); h.approve(task); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'FINAL_REVIEW', h.snapshot().tasks[0].reason ?? '');
+  assert.equal(h.snapshot().runs.filter(run => run.stage === 'repair').length, 0);
+  assert.equal(h.snapshot().validations.some(check => check.status === 'running'), false);
 });

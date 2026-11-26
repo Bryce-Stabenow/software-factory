@@ -146,8 +146,8 @@ const decisions = computed(() => data.value?.approvals.filter(approval => approv
 const taskEvents = computed(() => data.value?.events.filter(event => event.task_id === selectedId.value).slice().reverse() ?? []);
 const columns = [
   { name: 'Inbox', statuses: ['INBOX'] }, { name: 'Planning', statuses: ['PLANNING', 'PLANNING_BLOCKED'] },
-  { name: 'Plan review', statuses: ['PLAN_REVIEW'] }, { name: 'Building', statuses: ['QUEUED_FOR_BUILD', 'BUILDING'] },
-  { name: 'Validation / Review', statuses: ['VALIDATING', 'CODE_REVIEW', 'REPAIRING'] }, { name: 'Final review', statuses: ['FINAL_REVIEW'] },
+  { name: 'Plan review', statuses: ['PLAN_REVIEW'] }, { name: 'Build & verify', statuses: ['QUEUED_FOR_BUILD', 'BUILDING', 'VALIDATING', 'REPAIRING'] },
+  { name: 'Code review', statuses: ['CODE_REVIEW'] }, { name: 'Final review', statuses: ['FINAL_REVIEW'] },
   { name: 'Done', statuses: ['ACCEPTED', 'MERGED'] }, { name: 'Needs attention', statuses: ['FAILED', 'BLOCKED', 'REJECTED', 'CANCELLED'] },
 ];
 const taskFor = (requestId: string) => data.value?.tasks.find(task => task.request_id === requestId);

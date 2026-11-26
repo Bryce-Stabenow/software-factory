@@ -189,3 +189,54 @@ test('planning retry retains omitted choices and null resets only planning', asy
     assert.equal(policy.reviewModel, 'review-id');
   }
 });
+
+test('implementation verification tools await results and let the same session retry failed checks', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-verification-tool-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  execFileSync('git', ['init', '-b', 'main', directory], { stdio: 'ignore' });
+  writeFileSync(join(directory, 'greeting.ts'), 'export const greet = (name: string) => name;\n');
+  let calls = 0;
+  const implementer = new CodexImplementer(process.execPath, [fixture, 'verification'], 3000);
+  const result = await implementer.implement({ cwd: directory, guard() {}, prompt: 'Implement and verify', signal: new AbortController().signal, onEvent() {},
+    async runVerification() {
+      calls++; await new Promise(resolve => setTimeout(resolve, 10));
+      return { passed: calls > 1, checks: [{ name: 'Build', status: calls > 1 ? 'passed' : 'failed', exitCode: calls > 1 ? 0 : 1, log: 'Captured command output', reason: null }] };
+    },
+  });
+  assert.equal(calls, 2); assert.deepEqual(result.touchedPaths, ['greeting.ts']);
+});
+for (const mode of ['verification-args', 'verification-skip']) test(`implementation cannot bypass verification or substitute arbitrary commands: ${mode}`, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-verification-policy-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  execFileSync('git', ['init', '-b', 'main', directory], { stdio: 'ignore' });
+  writeFileSync(join(directory, 'greeting.ts'), 'export const greet = (name: string) => name;\n');
+  let calls = 0;
+  const implementer = new CodexImplementer(process.execPath, [fixture, mode], 3000);
+  await assert.rejects(implementer.implement({ cwd: directory, guard() {}, prompt: 'Implement and verify', signal: new AbortController().signal, onEvent() {},
+    async runVerification() { calls++; return { passed: true, checks: [] }; },
+  }));
+  assert.equal(calls, 0);
+});
+
+test('cancellation aborts and drains an implementation verification tool', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-verification-cancel-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  execFileSync('git', ['init', '-b', 'main', directory], { stdio: 'ignore' });
+  writeFileSync(join(directory, 'greeting.ts'), 'export const greet = (name: string) => name;\n');
+  const controller = new AbortController();
+  let drained = false;
+  const implementer = new CodexImplementer(process.execPath, [fixture, 'verification'], 3000);
+  await assert.rejects(implementer.implement({ cwd: directory, guard() {}, prompt: 'Implement and verify', signal: controller.signal, onEvent() {},
+    async runVerification(signal) {
+      setTimeout(() => controller.abort(), 10);
+      try {
+        await new Promise<void>((_resolve, reject) => {
+          if (signal!.aborted) reject(new Error('stopped'));
+          else signal!.addEventListener('abort', () => reject(new Error('stopped')), { once: true });
+        });
+        return { passed: true, checks: [] };
+      } finally { drained = true; }
+    },
+  }), error => (error as { code: string }).code === 'CANCELLED');
+  assert.equal(drained, true);
+});
