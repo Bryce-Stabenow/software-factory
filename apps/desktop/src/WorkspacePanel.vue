@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import type { InitializationRun, ValidationRun, Workspace, WorkspaceDetails } from '../../../packages/contracts/src/index';
 import StatusBadge from './StatusBadge.vue';
-import DiffViewer from './DiffViewer.vue';
 defineProps<{ workspace: Workspace; details: WorkspaceDetails | null; checks: ValidationRun[]; initializations: InitializationRun[]; status: string; busy: boolean; error: string }>();
-const emit = defineEmits<{ inspect: []; open: []; resume: [stage: 'implement' | 'validate' | 'review' | 'initialize']; copy: [text: string] }>();
+const emit = defineEmits<{ inspect: []; open: []; resume: [stage: 'implement' | 'validate' | 'review' | 'initialize']; copy: [text: string]; diff: [file?: string] }>();
 </script>
 <template>
   <section class="workspace-panel">
@@ -15,7 +14,7 @@ const emit = defineEmits<{ inspect: []; open: []; resume: [stage: 'implement' | 
     <template v-if="details">
       <p class="field-note mb-4"><UIcon :name="details.dirty ? 'i-lucide-circle-dashed' : 'i-lucide-check'" /> {{ details.dirty ? 'Uncommitted changes are preserved in this worktree.' : 'The worktree is clean and committed.' }}</p>
       <div v-if="['BLOCKED','FAILED','CANCELLED'].includes(status)" class="next-step-card mb-5"><h3>Recover preserved work</h3><p>Continue from the exact HEAD and contents shown by the last inspection. Existing edits stay in the worktree.</p><div class="action-row"><UButton size="sm" :disabled="busy" @click="emit('resume','implement')">Resume implementation</UButton><UButton color="neutral" variant="outline" size="sm" :disabled="busy || details.dirty" @click="emit('resume','validate')">Revalidate &amp; review</UButton><UButton color="neutral" variant="outline" size="sm" :disabled="busy || details.dirty" @click="emit('resume','initialize')">Initialize &amp; revalidate</UButton></div></div>
-      <UCollapsible class="evidence-disclosure"><UButton color="neutral" variant="ghost" trailing-icon="i-lucide-chevron-down" class="disclosure-trigger">Changed files <span>{{ details.changedFiles.length }}</span></UButton><template #content><div class="file-list"><span v-for="file in details.changedFiles" :key="file"><UIcon name="i-lucide-file-code" />{{ file }}</span></div><p v-if="details.truncated" class="field-note p-3">Diff capture is truncated. Open the worktree for the full changes.</p><DiffViewer :diff="details.diff" /></template></UCollapsible>
+      <div class="evidence-disclosure"><UButton color="neutral" variant="ghost" trailing-icon="i-lucide-arrow-right" class="disclosure-trigger" @click="emit('diff')">Changed files <span>{{ details.changedFiles.length }}</span></UButton><div class="file-list"><button v-for="file in details.changedFiles" :key="file" @click="emit('diff', file)"><UIcon name="i-lucide-file-code" />{{ file }}</button></div></div>
     </template>
     <div class="section-title mt-7"><h3>Worktree initialization</h3><span class="section-caption">{{ initializations.length }} attempts</span></div>
     <p v-if="!initializations.length" class="field-note">No initialization recorded. Configure setup commands in the project's .kulumin.yml for new worktrees.</p>
