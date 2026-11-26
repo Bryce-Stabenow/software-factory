@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseDiff, reconcileSelectedFile, sideBySide } from '../apps/desktop/src/diff-view.js';
+import { hasDiffContent, parseDiff, reconcileSelectedFile, sideBySide } from '../apps/desktop/src/diff-view.js';
 
 const patch = `diff --git a/one.ts b/one.ts
 index 1..2 100644
@@ -30,6 +30,13 @@ test('reconciles uncaptured and binary changes without treating them as empty di
   const files = parseDiff('diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ', ['logo.png', 'untracked.txt']);
   assert.equal(files[0].binary, true);
   assert.equal(files[1].unavailable, true);
+});
+
+test('recognizes metadata-only empty-file patches as having no text content', () => {
+  const [emptyFile] = parseDiff('diff --git a/empty.txt b/empty.txt\nnew file mode 100644\nindex 0000000..e69de29');
+  assert.equal(emptyFile.path, 'empty.txt');
+  assert.equal(emptyFile.lines.length, 3);
+  assert.equal(hasDiffContent(emptyFile), false);
 });
 
 test('side-by-side pairs unequal replacement blocks and leaves blank cells', () => {
