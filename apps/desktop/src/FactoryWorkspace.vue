@@ -12,6 +12,7 @@ import OperationalSettings from './OperationalSettings.vue';
 import StatusBadge from './StatusBadge.vue';
 import { statusMeta, kindIcon, priorityIcon, issueId, relativeTime } from './presentation';
 import { filterRequests, groupRequests, type RequestGrouping } from './request-view';
+import { parseDiff, reconcileSelectedFile } from './diff-view';
 import { useToast } from '@nuxt/ui/composables';
 
 const data = ref<Snapshot | null>(null);
@@ -58,6 +59,7 @@ const selectedReviews = computed(() => data.value?.reviews.filter(review => revi
 const evidenceDiff = computed(() => { try { return selectedEvidence.value ? JSON.parse(selectedEvidence.value.body_json) as { diff?: string; changedFiles?: string[]; baseSha?: string } : null; } catch { return null; } });
 const diffChangedFiles = computed(() => diffSource.value === 'evidence' ? evidenceDiff.value?.changedFiles ?? [] : workspaceDetails.value?.changedFiles ?? []);
 const diffText = computed(() => diffSource.value === 'evidence' ? evidenceDiff.value?.diff ?? '' : workspaceDetails.value?.diff ?? '');
+const diffSections = computed(() => parseDiff(diffText.value, diffChangedFiles.value));
 const selectedProject = computed(() => data.value?.projects.find(project => project.id === selected.value?.project_id));
 const hasBuildRun = computed(() => data.value?.runs.some(run => run.task_id === selectedId.value && ['implement', 'validate', 'review', 'repair'].includes(run.stage)) ?? false);
 const executionEnabled = computed(() => !!selectedProject.value && JSON.parse(selectedProject.value.config_json).executionEnabled === true);
@@ -227,8 +229,12 @@ async function reviewFinal(action: 'accept' | 'request_changes' | 'reject', feed
 }
 async function copyText(text: string) { try { await navigator.clipboard.writeText(text); toast.add({ title: 'Copied to clipboard', icon: 'i-lucide-check', color: 'success' }); } catch { error.value = 'Clipboard access is unavailable. Select and copy the branch text from the task worktree section.'; } }
 watch(selectedId, () => { feedback.value = ''; questionAnswers.value = {}; detailTab.value = 'overview'; diffSource.value = 'workspace'; diffFile.value = null; workspaceDetails.value = null; workspaceError.value = ''; });
-watch(diffChangedFiles, files => { if (diffFile.value && !files.includes(diffFile.value)) diffFile.value = null; });
-function openDiff(source: 'workspace' | 'evidence', file?: string) { diffSource.value = source; diffFile.value = file ?? null; detailTab.value = 'diff'; }
+watch(diffSections, sections => { diffFile.value = reconcileSelectedFile(sections, diffFile.value); });
+function openDiff(source: 'workspace' | 'evidence', file?: string) {
+  diffSource.value = source;
+  diffFile.value = reconcileSelectedFile(diffSections.value, file ?? diffFile.value);
+  detailTab.value = 'diff';
+}
 watch([selectedId, () => selected.value?.version, () => selectedWorkspace.value?.head_sha, () => selectedWorkspace.value?.cleanup_status], () => { workspaceDetails.value = null; void inspectWorkspace(); });
 function eventLabel(event: DomainEvent) { return event.type.replaceAll('.', ' · ').replaceAll('_', ' '); }
 let timer: ReturnType<typeof setInterval>;

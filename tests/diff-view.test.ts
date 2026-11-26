@@ -89,3 +89,9 @@ test('distinguishes a deleted file from an uncaptured changed file', () => {
   assert.equal(files[0].unavailable, false);
   assert.equal(files[1].unavailable, true);
 });
+
+test('keeps a captured section selectable when changed-file metadata is incomplete', () => {
+  const files = parseDiff('diff --git a/captured.ts b/captured.ts\n@@ -1 +1 @@\n-old\n+new', ['metadata-only.ts']);
+  assert.deepEqual(files.map(file => file.path), ['captured.ts', 'metadata-only.ts']);
+  assert.equal(reconcileSelectedFile(files, 'captured.ts'), 'captured.ts');
+});
