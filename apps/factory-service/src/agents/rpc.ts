@@ -42,7 +42,7 @@ export class CodexRpc extends EventEmitter {
             const call = this.pending.get(frame.id);
             if (!call) continue;
             clearTimeout(call.timer); this.pending.delete(frame.id);
-            if (frame.error) call.reject(new CodexError('PROVIDER_ERROR', 'Codex rejected the request. Check CLI authentication, model access, and protocol compatibility.'));
+            if (frame.error) call.reject(new CodexError(frame.error.code === -32601 ? 'METHOD_NOT_FOUND' : 'PROVIDER_ERROR', 'Codex rejected the request. Check CLI authentication, model access, and protocol compatibility.'));
             else call.resolve(frame.result);
           }
         } catch { this.finish(new CodexError('PROTOCOL_ERROR', 'Invalid Codex app-server protocol message.')); void this.stop(); }

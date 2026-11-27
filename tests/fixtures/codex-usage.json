@@ -1,0 +1,63 @@
+{
+  "rateLimits": {
+    "limitId": "codex",
+    "limitName": "Codex",
+    "primary": {
+      "usedPercent": 25,
+      "windowDurationMins": 300,
+      "resetsAt": 1800000000
+    },
+    "secondary": {
+      "usedPercent": 100,
+      "windowDurationMins": 10080,
+      "resetsAt": 1800500000
+    },
+    "planType": "plus",
+    "credits": {
+      "hasCredits": true,
+      "unlimited": false,
+      "balance": "12.50"
+    }
+  },
+  "rateLimitsByLimitId": {
+    "codex": {
+      "limitId": "codex",
+      "limitName": "Codex",
+      "primary": {
+        "usedPercent": 25,
+        "windowDurationMins": 300,
+        "resetsAt": 1800000000
+      },
+      "secondary": {
+        "usedPercent": 100,
+        "windowDurationMins": 10080,
+        "resetsAt": 1800500000
+      },
+      "planType": "plus",
+      "credits": {
+        "hasCredits": true,
+        "unlimited": false,
+        "balance": "12.50"
+      }
+    },
+    "codex-extra": {
+      "limitId": "codex-extra",
+      "limitName": "Additional Codex",
+      "primary": {
+        "usedPercent": 0.25,
+        "windowDurationMins": 90,
+        "resetsAt": 1800001000
+      },
+      "secondary": {
+        "usedPercent": 0,
+        "windowDurationMins": 1440,
+        "resetsAt": 1800080000
+      },
+      "accountId": "private-account-fixture",
+      "email": "private-email-fixture@example.invalid",
+      "model": "not-authoritative"
+    }
+  },
+  "accessToken": "private-token-fixture",
+  "accountId": "private-account-fixture"
+}

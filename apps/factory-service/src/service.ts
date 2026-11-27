@@ -17,6 +17,7 @@ import { defaultWorkspaceRoot, WorkspaceManager } from './git/workspaces.js';
 import { Delivery } from './git/delivery.js';
 import { RunPool } from './scheduler/run-pool.js';
 import type { ValidationAdapter } from './checks/validation.js';
+import { usageState } from './agents/codex-usage.js';
 import { childEnvironment, CodexError } from './agents/rpc.js';
 
 export class FactoryService {
@@ -27,6 +28,7 @@ export class FactoryService {
   readonly builds: BuildJobs;
   readonly operations: Operations;
   readonly delivery: Delivery;
+  private healthRefresh?: Promise<ProviderHealth>;
   private codexHealth: ProviderHealth = { id: 'codex', available: false, authenticated: false, message: 'Not checked. Check the local Codex CLI connection in Settings.' };
   constructor(readonly store: Store, options: { planner?: PlannerAdapter; implementer?: ImplementationAdapter; validator?: ValidationAdapter; reviewer?: ReviewAdapter; dataDir?: string; workspaceRoot?: string } = {}) {
     this.workflow = new Workflow(store);
@@ -56,8 +58,21 @@ export class FactoryService {
       } catch { return { ok: false, error: { code: 'INTERNAL_ERROR', message: 'The data folder could not be opened.' } }; }
     }
     if (command.success && command.data.type === 'provider.health') {
-      this.codexHealth = { id: 'codex', ...await this.planning.planner.health() };
-      return { ok: true, data: this.codexHealth };
+      if (!this.healthRefresh) {
+        this.healthRefresh = Promise.resolve().then(() => this.planning.planner.health()).then(health => {
+          // Replace the complete snapshot: failed refreshes and sign-out must not
+          // inherit another account's allowance or catalog.
+          this.codexHealth = { ...health, id: 'codex', usage: !health.available
+            ? usageState('error', 'Usage could not be checked. Check the Codex connection and refresh.')
+            : !health.authenticated ? usageState('signed_out', 'Sign in to Codex, then refresh usage.')
+            : health.usage ?? usageState('unavailable', 'Codex did not provide usage analytics for this account.') };
+          return this.codexHealth;
+        }).catch(() => {
+          this.codexHealth = { id: 'codex', available: false, authenticated: false, models: [], message: 'Codex health check failed. Try again.', usage: usageState('error', 'Usage refresh failed. Try refreshing again.') };
+          return this.codexHealth;
+        }).finally(() => { this.healthRefresh = undefined; });
+      }
+      return { ok: true, data: await this.healthRefresh };
     }
     if (command.success && command.data.type === 'workspace.open') {
       try {

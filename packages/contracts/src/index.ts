@@ -107,7 +107,28 @@ export interface WorkspaceDetails extends Workspace { reviewBaseSha: string; cur
 export interface DeliveryDetails { defaultBranch: string; defaultHead: string; taskBranch: string; remotes: string[]; mergeBlocker: string | null }
 export interface ValidationRun { id: string; task_id: string; commit_sha: string; name: string; argv_json: string; exit_code: number | null; status: string; log_text: string; reason: string | null; started_at: string; finished_at: string | null }
 export interface Question { id: string; task_id: string; plan_revision_id: string; prompt: string; answer: string | null; status: string }
-export interface ProviderHealth { id: 'fake' | 'codex'; available: boolean; authenticated: boolean; message: string; version?: string; models?: { model: string; name: string; isDefault: boolean }[] }
+export interface ProviderUsageWindow {
+  id: 'primary' | 'secondary';
+  remainingPercent: number | null;
+  durationMinutes: number | null;
+  resetsAt: string | null;
+}
+export interface ProviderUsageGroup {
+  id: string;
+  name: string | null;
+  scope: 'shared' | 'model';
+  model: string | null;
+  windows: ProviderUsageWindow[];
+  plan: string | null;
+  credits: { hasCredits: boolean | null; unlimited: boolean | null; balance: string | null } | null;
+}
+export interface ProviderUsage {
+  status: 'ready' | 'signed_out' | 'unavailable' | 'unsupported' | 'error';
+  checkedAt: string;
+  explanation: string;
+  groups: ProviderUsageGroup[];
+}
+export interface ProviderHealth { id: 'fake' | 'codex'; available: boolean; authenticated: boolean; message: string; version?: string; models?: { model: string; name: string; isDefault: boolean }[]; usage?: ProviderUsage }
 export interface Snapshot { projects: Project[]; requests: Request[]; requestRevisions: RequestRevision[]; tasks: Task[]; plans: PlanRevision[]; approvals: Approval[]; events: DomainEvent[]; runs: AgentRun[]; questions: Question[]; reviews: Review[]; evidence: EvidenceBundle[]; workspaces: Workspace[]; validations: ValidationRun[]; initializations: InitializationRun[]; providers: ProviderHealth[]; cursor: number; health: { provider: 'mixed'; mode: string; service: string } }
 export type ErrorCode = 'INVALID_TRANSITION' | 'STALE_VERSION' | 'APPROVAL_REQUIRED' | 'STALE_PLAN_REVISION' | 'STALE_EVIDENCE' | 'NOT_FOUND' | 'INVALID_INPUT' | 'PROJECT_INVALID' | 'WORKSPACE_CONFLICT' | 'POLICY_DENIED' | 'REPAIR_LIMIT' | 'CONFLICT' | 'INTERNAL_ERROR';
 export type Response<T = unknown> = { ok: true; data: T } | { ok: false; error: { code: ErrorCode; message: string } };

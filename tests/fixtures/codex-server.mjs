@@ -1,7 +1,13 @@
 import { createInterface } from 'node:readline';
 import assert from 'node:assert/strict';
+import { appendFileSync, readFileSync } from 'node:fs';
 
 const mode = process.argv[2] ?? 'success';
+const healthOnly = mode.startsWith('health-');
+const trace = event => { if (healthOnly && process.argv[3]) appendFileSync(process.argv[3], JSON.stringify(event) + '\n'); };
+trace({ pid: process.pid });
+process.on('exit', () => trace({ exited: true }));
+const usageFixture = JSON.parse(readFileSync(new URL('./codex-usage.json', import.meta.url), 'utf8'));
 const send = frame => process.stdout.write(JSON.stringify(frame) + '\n');
 const threadId = 'fixture-thread';
 const turnId = 'fixture-turn';
@@ -15,11 +21,27 @@ const complete = () => {
   if (mode === 'hang' || mode === 'permission') return;
   const text = mode === 'invalid' ? '{invalid' : JSON.stringify(implementing ? { summary: 'Updated greeting through the worktree tool', limitations: [] } : reviewing ? { commitSha: 'a'.repeat(40), verdict: 'pass', summary: 'Independent fixture review', findings: [] } : plan());
   send({ method: 'item/completed', params: { threadId, turnId, item: { id: 'message', type: 'agentMessage', text } } });
-  send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: mode === 'failed' ? 'failed' : 'completed', items: [], error: mode === 'failed' ? { message: 'sk-provider-secret-must-not-be-stored' } : null } } });
+  send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: mode === 'failed' ? 'failed' : 'completed', items: [], error: mode === 'failed' ? { message: '[REDACTED]' } : null } } });
 };
 const lines = createInterface({ input: process.stdin });
 lines.on('line', line => {
   const frame = JSON.parse(line);
+  if (healthOnly) {
+    trace({ method: frame.method });
+    assert.ok(!['thread/start', 'turn/start'].includes(frame.method), 'Health must never start inference');
+    if (mode === 'health-hang-initialize' && frame.method === 'initialize') return;
+    if (mode === 'health-hang-account' && frame.method === 'account/read') return;
+    if (mode === 'health-hang-catalog' && frame.method === 'model/list') return;
+  }
+  if (frame.method === 'account/rateLimits/read') {
+    if (mode === 'health-signed-out') assert.fail('Signed-out accounts must not request usage');
+    if (mode === 'health-timeout') return;
+    if (mode === 'health-disconnect') { process.exit(0); return; }
+    if (mode === 'health-unsupported' || mode === 'health-error') {
+      send({ id: frame.id, error: { code: mode === 'health-unsupported' ? -32601 : -32000, message: 'private-token-fixture private-email-fixture@example.invalid' } }); return;
+    }
+    send({ id: frame.id, result: mode === 'health-missing' ? { rateLimits: null } : mode === 'health-malformed' ? { rateLimits: { primary: 'broken' } } : usageFixture }); return;
+  }
   if (!frame.method && frame.id === 'verification-request') {
     assert.equal(frame.result.success, true);
     const result = JSON.parse(frame.result.contentItems[0].text);
@@ -40,7 +62,7 @@ lines.on('line', line => {
     return;
   }
   if (frame.method === 'initialize') { assert.equal(frame.params.capabilities.experimentalApi, true); send({ id: frame.id, result: { userAgent: 'codex-cli/fixture' } }); }
-  if (frame.method === 'account/read') send({ id: frame.id, result: { account: mode === 'signed-out' ? null : { type: 'chatgpt', email: 'private-email-not-for-client@example.com' } } });
+  if (frame.method === 'account/read') send({ id: frame.id, result: { account: (mode === 'signed-out' || mode === 'health-signed-out') ? null : { type: 'chatgpt', email: 'private-email-not-for-client@example.com' } } });
   if (frame.method === 'model/list') send({ id: frame.id, result: { data: [{ model: 'fixture-model', displayName: 'Fixture model', isDefault: true }] } });
   if (frame.method === 'config/read') send({ id: frame.id, result: { config: { features: { shell_tool: mode === 'unsafe-config' }, mcp_servers: mode === 'inherited-mcp' ? { fixture: { enabled: process.argv.includes('mcp_servers.fixture.enabled=false') ? false : true } } : {} } } });
   if (frame.method === 'thread/start') {

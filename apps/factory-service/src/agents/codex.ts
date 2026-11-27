@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { implementationSchema, planSchema, reviewSchema, type ReviewResult, type ImplementationResult, type Plan } from '../../../../packages/contracts/src/index.js';
+import { normalizeCodexUsage, usageState } from './codex-usage.js';
+import { implementationSchema, planSchema, reviewSchema, type ReviewResult, type ImplementationResult, type Plan, type ProviderHealth } from '../../../../packages/contracts/src/index.js';
 import { CodexError, CodexRpc, type RpcMessage } from './rpc.js';
 import { SnapshotReader } from './snapshot.js';
 import { redact } from './snapshot.js';
@@ -14,7 +15,7 @@ export interface ReviewInput extends PlannerInput { commitSha: string }
 export interface ReviewAdapter { review(input: ReviewInput): Promise<ReviewResult> }
 export interface ImplementationAdapter { implement(input: ImplementationInput): Promise<ImplementationResult & { touchedPaths: string[] }> }
 export interface PlannerAdapter {
-  health(): Promise<{ available: boolean; authenticated: boolean; message: string; version?: string }>;
+  health(): Promise<Omit<ProviderHealth, 'id'>>;
   plan(input: PlannerInput): Promise<Plan>;
 }
 
@@ -67,19 +68,50 @@ export async function connectPlanningRpc(binary: string, args: string[], cwd: st
 }
 
 export class CodexPlanner implements PlannerAdapter {
-  constructor(private binary = process.env.FACTORY_CODEX_BINARY ?? 'codex', private args = serverArgs, private timeoutMs = 5 * 60 * 1000, private diagnostic?: (message: string) => void) {}
-  async health() {
+  constructor(private binary = process.env.FACTORY_CODEX_BINARY ?? 'codex', private args = serverArgs, private timeoutMs = 5 * 60 * 1000, private diagnostic?: (message: string) => void, private healthTimeoutMs = 35000) {}
+  async health(): Promise<Omit<ProviderHealth, 'id'>> {
     let rpc: CodexRpc | undefined;
+    // One deadline spans configuration retries, authentication, catalog and usage.
+    // Cleanup has a 500ms kill grace period, below the native bridge's 45s limit.
+    const signal = AbortSignal.timeout(Math.min(35000, this.healthTimeoutMs));
+    const abort = () => { void rpc?.stop(); };
+    signal.addEventListener('abort', abort, { once: true });
     try {
-      const connection = await connectPlanningRpc(this.binary, this.args, process.cwd(), AbortSignal.timeout(30000));
-      rpc = connection.rpc; const hello = connection.hello;
+      const connection = await connectPlanningRpc(this.binary, this.args, process.cwd(), signal);
+      rpc = connection.rpc;
+      signal.throwIfAborted();
       const account = await rpc.request('account/read', { refreshToken: false });
-      const catalog = await rpc.request('model/list', { limit: 100 });
-      const models = Array.isArray(catalog?.data) ? catalog.data.map((model: RpcMessage) => ({ model: model.model, name: model.displayName, isDefault: model.isDefault })).filter((model: RpcMessage) => typeof model.model === 'string') : [];
       const authenticated = !!account?.account;
-      return { available: true, authenticated, models, version: typeof hello?.userAgent === 'string' ? hello.userAgent.slice(0, 200) : undefined, message: authenticated ? 'Codex CLI is signed in. Model access is verified by a completed planning turn.' : 'Run codex login in your terminal, then check again.' };
-    } catch (error) { return { available: false, authenticated: false, message: error instanceof CodexError ? error.message : 'Codex health check failed.' }; }
-    finally { await rpc?.stop(); }
+      if (!authenticated) return {
+        available: true, authenticated: false, models: [],
+        message: 'Run codex login in your terminal, then check again.',
+        usage: usageState('signed_out', 'Sign in to Codex, then refresh usage.'),
+      };
+      let models: NonNullable<ProviderHealth['models']> = [];
+      let catalogFailed = false;
+      try {
+        const catalog = await rpc.request('model/list', { limit: 100 }, 5000);
+        models = Array.isArray(catalog?.data) ? catalog.data.flatMap((model: RpcMessage) =>
+          model && typeof model.model === 'string' && /^[a-zA-Z0-9._:/-]{1,120}$/.test(model.model) ?
+            [{ model: model.model, name: typeof model.displayName === 'string' && /^[a-zA-Z0-9 ._()/-]{1,120}$/.test(model.displayName) ? model.displayName : model.model, isDefault: model.isDefault === true }] : []) : [];
+      } catch { catalogFailed = true; }
+      let usage;
+      try { usage = normalizeCodexUsage(await rpc.request('account/rateLimits/read', {}, 5000)); }
+      catch (error) {
+        usage = error instanceof CodexError && error.code === 'METHOD_NOT_FOUND'
+          ? usageState('unsupported', 'This Codex CLI does not support usage analytics. Update the CLI and refresh.')
+          : usageState('error', signal.aborted || error instanceof CodexError && error.code === 'PROVIDER_TIMEOUT'
+            ? 'Usage refresh timed out. Try refreshing again.' : 'Usage refresh failed. Try refreshing again.');
+      }
+      const agent = connection.hello?.userAgent;
+      return {
+        available: true, authenticated, models, usage,
+        version: typeof agent === 'string' && /^[a-zA-Z0-9._/ -]{1,200}$/.test(agent) ? agent : undefined,
+        message: 'Codex CLI is signed in. Model access is verified by a completed planning turn.' + (catalogFailed ? ' Model catalog refresh failed.' : ''),
+      };
+    } catch {
+      return { available: false, authenticated: false, models: [], message: 'Codex health check failed. Check the CLI connection and sign-in, then retry.', usage: usageState('error', 'Usage could not be checked. Check the Codex connection and refresh.') };
+    } finally { signal.removeEventListener('abort', abort); await rpc?.stop(); }
   }
   async plan(input: PlannerInput): Promise<Plan> {
     return this.execute(input, 'plan') as Promise<Plan>;
