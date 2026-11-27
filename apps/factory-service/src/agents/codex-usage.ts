@@ -38,7 +38,7 @@ function group(value: unknown, key: string): ProviderUsageGroup | null {
     balance: typeof balance === 'string' && /^\d{1,20}(\.\d{1,10})?$/.test(balance) ? balance : null,
   } : null;
   const plan = typeof source.planType === 'string' && ['free', 'go', 'plus', 'pro', 'team', 'business', 'enterprise', 'edu'].includes(source.planType) ? source.planType : null;
-  if (!windows.length && !plan && (!normalizedCredits || Object.values(normalizedCredits).every(value => value === null))) return null;
+  if (!windows.some(window => window.remainingPercent !== null || window.durationMinutes !== null || window.resetsAt !== null) && !plan && (!normalizedCredits || Object.values(normalizedCredits).every(value => value === null))) return null;
   return { id: key, name: label(source.limitName) ?? label(source.limitId) ?? label(key), scope: 'shared', model: null, windows, plan, credits: normalizedCredits };
 }
 export function normalizeCodexUsage(value: unknown, checkedAt = new Date().toISOString()): ProviderUsage {
@@ -48,7 +48,7 @@ export function normalizeCodexUsage(value: unknown, checkedAt = new Date().toISO
   const named = record(source.rateLimitsByLimitId);
   if (named) for (const [key, value] of Object.entries(named)) {
     const result = group(value, key);
-    // IDs used by the UI are local; arbitrary map keys are never returned.
+    // UI IDs are local; provider names/keys only pass through the bounded label filter.
     if (result) groups.push({ ...result, id: 'limit-' + groups.length });
   }
   const legacy = group(source.rateLimits, 'Account limits');

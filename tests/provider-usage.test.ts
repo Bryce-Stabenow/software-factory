@@ -44,10 +44,10 @@ test('legacy-only, identical unnamed summary, and malformed named entries retain
 });
 test('percentages are finite and bounded; missing values and unknown shapes stay explicit', () => {
   for (const [used, left] of [[0,100], [100,0], [150,0], [-10,100], [NaN,null], [Infinity,null], [null,null], [undefined,null]] as const) {
-    assert.equal(normalizeCodexUsage({ rateLimits: { primary: { usedPercent: used } } }).groups[0].windows[0].remainingPercent, left);
+    assert.equal(normalizeCodexUsage({ rateLimits: { primary: { usedPercent: used, windowDurationMins: 60 } } }).groups[0].windows[0].remainingPercent, left);
   }
   for (const value of [{}, { rateLimits: null }, { rateLimitsByLimitId: {} }]) assert.equal(normalizeCodexUsage(value).status, 'unavailable');
-  for (const value of [null, [], { rateLimits: 'bad' }, { rateLimits: { primary: false } }]) assert.equal(normalizeCodexUsage(value).status, 'error');
+  for (const value of [null, [], { rateLimits: 'bad' }, { rateLimits: { primary: false } }, { rateLimits: { primary: {} } }]) assert.equal(normalizeCodexUsage(value).status, 'error');
   const creditOnly = normalizeCodexUsage({ rateLimits: { credits: { unlimited: true, balance: 'private-token-fixture' }, planType: 'private-account-fixture', limitName: 'private-email@example.invalid' } });
   assert.deepEqual(creditOnly.groups[0].windows, []);
   assert.equal(creditOnly.groups[0].credits?.unlimited, true);
@@ -156,7 +156,7 @@ test('usage component renders accessible indicators, all groups, credits and dis
   assert.match(html, /Shared account limits/); assert.match(html, /Additional Codex/);
   assert.match(html, /Credit balance: 12.50/); assert.match(html, /Last checked:/);
   assert.doesNotMatch(html, /not-authoritative|private-/);
-  const unknown = normalizeCodexUsage({ rateLimits: { primary: {} } });
+  const unknown = normalizeCodexUsage({ rateLimits: { primary: { windowDurationMins: 60 } } });
   assert.match(await render({ usage: unknown }), /Percentage unavailable/);
   assert.doesNotMatch(await render({ usage: unknown }), /<progress /);
   assert.match(await render({}), /not been checked/);
