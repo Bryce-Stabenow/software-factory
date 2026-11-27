@@ -138,6 +138,8 @@ button { transition: background-color 120ms, color 120ms, border-color 120ms; }
 .filter-popover h3 { font-size: 13px; font-weight: 600; }
 .filter-popover label { font-size: 12px; }
 .workspace-view { flex: 1; min-height: 0; overflow: auto; }
+.workspace-view-board { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.workspace-view-board > .list-context { flex-shrink: 0; }
 .list-context { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 47px; padding: 0 25px; background: color-mix(in srgb, var(--chrome) 48%, var(--canvas)); border-bottom: 1px solid var(--line); }
 .list-context>div { display: flex; align-items: center; gap: 8px; }
 .list-context>div>span:first-child { width: 14px; height: 14px; color: var(--muted); }
@@ -174,9 +176,10 @@ button { transition: background-color 120ms, color 120ms, border-color 120ms; }
 .view-empty h2 { font-size: 18px; font-weight: 550; letter-spacing: -.4px; }
 .view-empty p { max-width: 350px; font-size: 13px; margin: 12px 0 22px; }
 .empty-shortcut { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--faint); margin-top: 15px; }
-.kanban-board { display: flex; gap: 16px; padding: 20px 24px 32px; overflow: auto; min-height: 400px; }
+.kanban-board { display: grid; grid-auto-flow: column; grid-auto-columns: 244px; grid-template-rows: minmax(max-content, 1fr); align-items: stretch; gap: 16px; padding: 20px 24px 32px; overflow: auto; flex: 1; min-height: 0; scroll-padding-top: 44px; }
+/* One shared content-height row keeps short and empty columns sticky to the end. */
 .kanban-column { width: 244px; flex-shrink: 0; }
-.kanban-heading { display: flex; gap: 8px; align-items: center; padding: 3px 4px 15px; }
+.kanban-heading { position: sticky; top: 0; z-index: 1; background: var(--canvas); display: flex; gap: 8px; align-items: center; padding: 3px 4px 15px; }
 .kanban-heading h3 { font-size: 12px; font-weight: 550; }
 .kanban-heading>span:last-child { color: var(--faint); margin-left: 3px; font-size: 11px; }
 .column-indicator { width: 7px; height: 7px; border-radius: 50%; background: currentColor; color: var(--faint); }
