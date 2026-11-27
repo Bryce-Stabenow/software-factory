@@ -13,7 +13,7 @@ export type ImplementationResult = z.infer<typeof implementationSchema>;
 export const reviewSchema = z.object({
   commitSha: z.string().regex(/^[a-f0-9]{40,64}$/), verdict: z.enum(['pass', 'changes_requested', 'blocked']),
   summary: z.string().min(1).max(20000),
-  findings: z.array(z.object({ severity: z.enum(['critical', 'high', 'medium', 'low']), file: z.string().max(2000), line: z.number().int().positive().nullable(), title: z.string().min(1).max(500), rationale: z.string().min(1).max(4000), suggestedFix: z.string().max(4000) })).max(100),
+  findings: z.array(z.object({ severity: z.enum(['critical', 'high', 'medium', 'low']), category: z.enum(['code_defect', 'environment', 'evidence', 'scope', 'other']).optional(), origin: z.enum(['introduced', 'pre_existing', 'unknown']).optional(), file: z.string().max(2000), line: z.number().int().positive().nullable(), title: z.string().min(1).max(500), rationale: z.string().min(1).max(4000), suggestedFix: z.string().max(4000) })).max(100),
 });
 export type ReviewResult = z.infer<typeof reviewSchema>;
 export interface Review { id: string; task_id: string; run_id: string; commit_sha: string; verdict: string; findings_json: string; summary: string; status: string; created_at: string }
@@ -81,7 +81,8 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('task.startReview'), taskId: id, expectedVersion: version }),
   z.object({ type: z.literal('task.run'), taskId: id, expectedVersion: version }),
   z.object({ type: z.literal('task.resume'), taskId: id, expectedVersion: version, stage: z.enum(['implement', 'validate', 'review', 'initialize']), expectedHead: z.string().regex(/^[a-f0-9]{40,64}$/), expectedWorkspaceDigest: z.string().length(64) }),
-  z.object({ type: z.literal('task.reviewFinal'), taskId: id, expectedVersion: version, bundleId: id, digest: z.string().length(64), expectedHead: z.string().regex(/^[a-f0-9]{40,64}$/), action: z.enum(['accept', 'request_changes', 'reject']), feedback: z.string().max(20000).default('') }),
+  z.object({ type: z.literal('task.prepareOverride'), taskId: id, expectedVersion: version, expectedHead: z.string().regex(/^[a-f0-9]{40,64}$/), expectedWorkspaceDigest: z.string().length(64) }),
+  z.object({ type: z.literal('task.reviewFinal'), taskId: id, expectedVersion: version, bundleId: id, digest: z.string().length(64), expectedHead: z.string().regex(/^[a-f0-9]{40,64}$/), action: z.enum(['accept', 'accept_override', 'request_changes', 'reject']), feedback: z.string().max(20000).default('') }),
   z.object({ type: z.literal('delivery.inspect'), taskId: id }),
   z.object({ type: z.literal('delivery.merge'), taskId: id, expectedVersion: version, expectedHead: z.string().regex(/^[a-f0-9]{40,64}$/), expectedDefaultHead: z.string().regex(/^[a-f0-9]{40,64}$/) }),
   z.object({ type: z.literal('delivery.push'), taskId: id, expectedVersion: version, target: z.enum(['task', 'default']), remote: z.string().min(1).max(200), expectedHead: z.string().regex(/^[a-f0-9]{40,64}$/) }),
@@ -108,7 +109,7 @@ export interface ValidationRun { id: string; task_id: string; commit_sha: string
 export interface Question { id: string; task_id: string; plan_revision_id: string; prompt: string; answer: string | null; status: string }
 export interface ProviderHealth { id: 'fake' | 'codex'; available: boolean; authenticated: boolean; message: string; version?: string; models?: { model: string; name: string; isDefault: boolean }[] }
 export interface Snapshot { projects: Project[]; requests: Request[]; requestRevisions: RequestRevision[]; tasks: Task[]; plans: PlanRevision[]; approvals: Approval[]; events: DomainEvent[]; runs: AgentRun[]; questions: Question[]; reviews: Review[]; evidence: EvidenceBundle[]; workspaces: Workspace[]; validations: ValidationRun[]; initializations: InitializationRun[]; providers: ProviderHealth[]; cursor: number; health: { provider: 'mixed'; mode: string; service: string } }
-export type ErrorCode = 'INVALID_TRANSITION' | 'STALE_VERSION' | 'APPROVAL_REQUIRED' | 'STALE_PLAN_REVISION' | 'STALE_EVIDENCE' | 'NOT_FOUND' | 'INVALID_INPUT' | 'PROJECT_INVALID' | 'WORKSPACE_CONFLICT' | 'POLICY_DENIED' | 'CONFLICT' | 'INTERNAL_ERROR';
+export type ErrorCode = 'INVALID_TRANSITION' | 'STALE_VERSION' | 'APPROVAL_REQUIRED' | 'STALE_PLAN_REVISION' | 'STALE_EVIDENCE' | 'NOT_FOUND' | 'INVALID_INPUT' | 'PROJECT_INVALID' | 'WORKSPACE_CONFLICT' | 'POLICY_DENIED' | 'REPAIR_LIMIT' | 'CONFLICT' | 'INTERNAL_ERROR';
 export type Response<T = unknown> = { ok: true; data: T } | { ok: false; error: { code: ErrorCode; message: string } };
 
 export interface Diagnostics {

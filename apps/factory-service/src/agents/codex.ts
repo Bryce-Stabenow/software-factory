@@ -176,7 +176,7 @@ export class CodexPlanner implements PlannerAdapter {
       input.onEvent({ type: 'session', sessionId: threadId, pid: rpc.child.pid });
       const started = await rpc.request('turn/start', {
         threadId, cwd: input.cwd, approvalPolicy: 'never', sandboxPolicy,
-        input: [{ type: 'text', text: input.prompt }], outputSchema: z.toJSONSchema(outputValidator),
+        input: [{ type: 'text', text: input.prompt }], outputSchema: z.toJSONSchema(role === 'review' ? reviewSchema.extend({ findings: z.array(reviewSchema.shape.findings.element.required({ category: true, origin: true })).max(100) }) : outputValidator),
       });
       turnId = z.string().min(1).parse(started.turn?.id);
       input.onEvent({ type: 'turn', turnId });

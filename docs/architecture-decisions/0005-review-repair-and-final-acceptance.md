@@ -26,4 +26,12 @@ Final decisions require expected task version, bundle ID, digest, and exact HEAD
 
 Inspection and restart revoke current acceptance when HEAD, source, checks, or evidence changes; the historical human decision is retained. `ACCEPTED` is completion of the task, not a Git merge. There is no push, merge, deployment, or automatic cleanup.
 
+## Explicit human override and failure classification
+
+The ordinary quality gate above remains required for `accept`. Failed, blocked, and cancelled implementation tasks have an additional `task.prepareOverride` command that captures immutable override evidence without dispatching an agent or changing task status. It binds a clean current commit, complete diff, approved plan, project configuration digest, actual check outcomes (including missing/stale results), setup logs, run failures, and review history. Missing or failed independent review is disclosed rather than synthesized. Preparing and accepting evidence require stopped workers and optimistic version/HEAD/content checks.
+
+`task.reviewFinal` with `accept_override` requires this current override bundle and a nonempty human reason. The UI also requires acknowledgement. It records a distinct local-human approval against the bundle digest and commit, then permits `ACCEPTED` directly from the failed state. Ordinary acceptance and final-review publication cannot use override evidence. Delivery recognizes both kinds of recorded human acceptance. Restart and inspection reconstruct override evidence, revoke acceptance on changes, and retain the historical reason and failed results.
+
+Review findings now carry optional category and origin fields for backward compatibility; new provider output requires both. Categories distinguish code defects, environment, evidence, scope, and other findings; origin distinguishes introduced, pre-existing, and unknown problems. Findings without metadata retain their previous actionable behavior. Explicit environment/evidence/scope/other, pre-existing, or uncertain-origin findings block for human action instead of triggering code repairs. Pipeline failures expose separate causes and recovery guidance, including provider/configuration/evidence failures and exhausted repairs; repair exhaustion and blocked review no longer masquerade as permission denials. Historical failed tasks are classified from their existing codes, reasons, and logs without a database migration.
+
 Protocol: [official Codex app-server documentation](https://learn.chatgpt.com/docs/app-server).

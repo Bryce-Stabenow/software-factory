@@ -869,3 +869,98 @@ test('verification timeout returns captured results to the same agent and does n
   assert.equal(h.snapshot().runs.filter(run => run.stage === 'repair').length, 0);
   assert.equal(h.snapshot().validations.some(check => check.status === 'running'), false);
 });
+
+function prepareOverride(h: Awaited<ReturnType<typeof setup>>) {
+  const task = h.snapshot().tasks[0];
+  const details = h.call<WorkspaceDetails>({ type: 'workspace.inspect', taskId: task.id });
+  return h.call({ type: 'task.prepareOverride', taskId: task.id, expectedVersion: h.snapshot().tasks[0].version, expectedHead: details.currentHead, expectedWorkspaceDigest: details.workspaceDigest });
+}
+function overrideCommand(h: Awaited<ReturnType<typeof setup>>, feedback = 'Accepting the known failures for local inspection.'): Command {
+  return { ...finalCommand(h), action: 'accept_override', feedback } as Command;
+}
+
+test('override accepts failed checks honestly, retains evidence across restart, and supports delivery', async t => {
+  const validator: ValidationAdapter = { async run() { return { exitCode: 2, log: 'AssertionError: formal greeting is wrong' }; } };
+  const h = await setup(t, { validator }); h.approve(await h.makeTask()); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'BLOCKED');
+  prepareOverride(h);
+  const before = h.snapshot(), bundle = before.evidence.at(-1)!, body = JSON.parse(bundle.body_json);
+  assert.equal(body.mode, 'override'); assert.equal(body.checks[0].status, 'failed'); assert.equal(body.checks[0].exitCode, 2);
+  assert.equal(body.review, null); assert.equal(body.pipelineBlocker.failure.category, 'repair_limit');
+  assert.equal(h.service.dispatch(finalCommand(h)).ok, false, 'normal acceptance cannot accept failed evidence');
+  assert.throws(() => h.service.workflow.transition(before.tasks[0].id, before.tasks[0].version, 'ACCEPTED', 'bypass'), /explicit human override/);
+  assert.equal(h.service.dispatch(overrideCommand(h, '   ')).ok, false, 'an override reason is required');
+  h.call(overrideCommand(h));
+  const accepted = h.snapshot(); assert.equal(accepted.tasks[0].status, 'ACCEPTED'); assert.equal(accepted.tasks[0].accepted_commit_sha, bundle.commit_sha);
+  assert.equal(accepted.validations.at(-1)?.status, 'failed'); assert.equal(accepted.reviews.length, 0);
+  const approval = accepted.approvals.find(approval => approval.action === 'accept_override')!;
+  assert.equal(approval.artifact_id, bundle.id); assert.equal(approval.artifact_digest, bundle.sha256_digest); assert.match(approval.feedback, /known failures/);
+  h.call({ type: 'delivery.inspect', taskId: accepted.tasks[0].id });
+  await h.restart(); assert.equal(h.snapshot().tasks[0].status, 'ACCEPTED');
+  assert.equal(h.snapshot().evidence.at(-1)?.body_json, bundle.body_json);
+  assert.equal(git(h.repo, ['rev-parse', 'HEAD']).trim(), h.mainHead);
+  writeFileSync(join(h.snapshot().workspaces[0].path, 'greeting.cjs'), implemented + '// later edit\n');
+  h.call({ type: 'workspace.inspect', taskId: accepted.tasks[0].id });
+  assert.equal(h.snapshot().tasks[0].status, 'BLOCKED'); assert.equal(h.snapshot().tasks[0].accepted_commit_sha, null);
+  assert.equal(h.snapshot().approvals.filter(approval => approval.action === 'accept_override').length, 1);
+});
+
+test('override captures a blocked review and does not consume another repair', async t => {
+  const reviewer: ReviewAdapter = { async review(input) { return { commitSha: input.commitSha, verdict: 'blocked', summary: 'Cannot verify the acceptance criteria.', findings: [{ ...finding, category: 'evidence', origin: 'unknown' }] }; } };
+  const h = await setup(t, { reviewer }); h.approve(await h.makeTask()); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'BLOCKED');
+  prepareOverride(h);
+  const body = JSON.parse(h.snapshot().evidence.at(-1)!.body_json);
+  assert.equal(body.review.verdict, 'blocked'); assert.equal(body.review.findings[0].category, 'evidence');
+  h.call(overrideCommand(h)); assert.equal(h.snapshot().tasks[0].status, 'ACCEPTED');
+  assert.equal(h.snapshot().runs.filter(run => run.stage === 'repair').length, 0);
+});
+
+for (const category of ['environment', 'evidence', 'scope'] as const) test(`classified ${category} findings do not trigger code repair`, async t => {
+  const reviewer: ReviewAdapter = { async review(input) { return { commitSha: input.commitSha, verdict: 'changes_requested', summary: 'Needs human attention.', findings: [{ ...finding, category, origin: 'pre_existing' }] }; } };
+  const h = await setup(t, { reviewer }); h.approve(await h.makeTask()); await h.service.builds.idle();
+  assert.equal(h.snapshot().tasks[0].status, 'BLOCKED'); assert.equal(h.implementationCalls, 1);
+  assert.equal(h.snapshot().runs.filter(run => run.stage === 'repair').length, 0);
+  assert.match(h.snapshot().tasks[0].reason!, /No actionable code defect/);
+});
+
+test('override binds exact evidence, configuration, commit, and task version', async t => {
+  const h = await setup(t, { commands: [] }); h.approve(await h.makeTask()); await h.service.builds.idle();
+  prepareOverride(h);
+  assert.equal(JSON.parse(h.snapshot().evidence.at(-1)!.body_json).checks.length, 0);
+  const command = overrideCommand(h);
+  for (const replacement of [{ bundleId: randomUUID() }, { digest: '0'.repeat(64) }, { expectedHead: '0'.repeat(40) }, { expectedVersion: 1 }]) assert.equal(h.service.dispatch({ ...command, ...replacement }).ok, false);
+  h.configure([check]);
+  assert.equal(h.service.dispatch(command).ok, false, 'configuration changes invalidate override evidence');
+  prepareOverride(h);
+  assert.equal(JSON.parse(h.snapshot().evidence.at(-1)!.body_json).checks[0].status, 'not_run');
+  writeFileSync(join(h.snapshot().workspaces[0].path, 'greeting.cjs'), implemented + '// uncommitted\n');
+  assert.equal(h.service.dispatch(overrideCommand(h)).ok, false, 'dirty source invalidates override evidence');
+  const task = h.snapshot().tasks[0], details = h.call<WorkspaceDetails>({ type: 'workspace.inspect', taskId: task.id });
+  assert.equal(h.service.dispatch({ type: 'task.prepareOverride', taskId: task.id, expectedVersion: task.version, expectedHead: details.currentHead, expectedWorkspaceDigest: details.workspaceDigest }).ok, false);
+});
+
+test('override preparation waits for active workers and rejects an outdated inspection', async t => {
+  const h = await setup(t, { commands: [] }); h.approve(await h.makeTask()); await h.service.builds.idle();
+  const task = h.snapshot().tasks[0], details = h.call<WorkspaceDetails>({ type: 'workspace.inspect', taskId: task.id });
+  const command: Command = { type: 'task.prepareOverride', taskId: task.id, expectedVersion: task.version, expectedHead: details.currentHead, expectedWorkspaceDigest: details.workspaceDigest };
+  assert.equal(h.service.dispatch({ ...command, expectedWorkspaceDigest: '0'.repeat(64) }).ok, false);
+  const runId = randomUUID(); h.store.db.prepare("INSERT INTO agent_runs(id,task_id,stage,provider,status,attempt,started_at) VALUES (?,?,'review','codex','stopping',1,?)").run(runId, task.id, new Date().toISOString());
+  const result = h.service.dispatch(command); assert.equal(result.ok, false); if (!result.ok) assert.equal(result.error.code, 'CONFLICT');
+  h.store.db.prepare("UPDATE agent_runs SET status='cancelled' WHERE id=?").run(runId);
+  prepareOverride(h); h.call(overrideCommand(h)); assert.equal(h.snapshot().tasks[0].status, 'ACCEPTED');
+});
+
+test('override can accept an inspected external commit and rejects a previously captured commit', async t => {
+  const h = await setup(t, { commands: [] }); h.approve(await h.makeTask()); await h.service.builds.idle();
+  prepareOverride(h); const stale = overrideCommand(h), workspace = h.snapshot().workspaces[0];
+  writeFileSync(join(workspace.path, 'greeting.cjs'), implemented + '// manually inspected correction\n');
+  git(workspace.path, ['add', '--', 'greeting.cjs']);
+  git(workspace.path, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '--no-gpg-sign', '-m', 'Manual correction']);
+  assert.equal(h.service.dispatch(stale).ok, false);
+  prepareOverride(h); h.call(overrideCommand(h));
+  const acceptedHead = git(workspace.path, ['rev-parse', 'HEAD']).trim();
+  assert.equal(h.snapshot().tasks[0].accepted_commit_sha, acceptedHead);
+  assert.equal(h.snapshot().workspaces[0].head_sha, acceptedHead);
+  await h.restart(); assert.equal(h.snapshot().tasks[0].status, 'ACCEPTED');
+});

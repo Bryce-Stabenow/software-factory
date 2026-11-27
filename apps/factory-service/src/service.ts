@@ -238,22 +238,36 @@ export class FactoryService {
         if (command.action === 'approve' && JSON.parse(task.provider_policy_json).provider === 'codex' && executionConfig(project).executionEnabled) return this.builds.enqueue(task.id, task.version);
         return task;
       });
+      case 'task.prepareOverride': return this.store.transaction(() => {
+        const task = this.workflow.getTask(command.taskId, command.expectedVersion);
+        if (!['BLOCKED', 'FAILED', 'CANCELLED'].includes(task.status)) fail('INVALID_TRANSITION', 'Override review is available for failed, blocked, or cancelled work.');
+        if (this.store.db.prepare("SELECT id FROM agent_runs WHERE task_id=? AND status IN ('queued','starting','running','waiting_permission','stopping')").get(task.id)) fail('CONFLICT', 'Wait for the current worker to stop before preparing override evidence.');
+        this.workflow.assertApproved(task);
+        const details = this.builds.workspaces.inspect(task);
+        if (details.currentHead !== command.expectedHead || details.workspaceDigest !== command.expectedWorkspaceDigest) fail('STALE_EVIDENCE', 'The inspected worktree changed. Refresh before preparing override evidence.');
+        const bundle = this.builds.evidence.create(task, true);
+        this.store.event('final.override_prepared', task.project_id, task.id, { evidenceId: bundle.id, commitSha: bundle.commit_sha });
+        return bundle;
+      });
       case 'task.reviewFinal': {
         let task = this.workflow.getTask(command.taskId, command.expectedVersion);
-        if (task.status !== 'FINAL_REVIEW') fail('INVALID_TRANSITION', 'This task is not awaiting final human review.');
+        const override = command.action === 'accept_override';
+        if (override ? !['BLOCKED', 'FAILED', 'CANCELLED'].includes(task.status) : task.status !== 'FINAL_REVIEW') fail('INVALID_TRANSITION', 'This task is not awaiting this kind of human review.');
         // Inspect outside the decision transaction so invalidation survives a rejected stale command.
         this.builds.inspect(task.id);
         task = this.workflow.getTask(task.id, command.expectedVersion);
         return this.store.transaction(() => {
           this.workflow.assertApproved(task);
-          const evidence = this.builds.evidence.verify(task);
+          const evidence = this.builds.evidence.verify(task, override);
           if (evidence.id !== command.bundleId || evidence.sha256_digest !== command.digest || evidence.commit_sha !== command.expectedHead) fail('STALE_EVIDENCE', 'The displayed final evidence or commit does not match. Refresh before deciding.');
+          if ((JSON.parse(evidence.body_json).mode === 'override') !== override) fail('APPROVAL_REQUIRED', 'Failed evidence must be accepted using the explicit override action.');
           if (this.store.db.prepare("SELECT id FROM agent_runs WHERE task_id=? AND status IN ('queued','starting','running','waiting_permission','stopping')").get(task.id)) fail('CONFLICT', 'Wait for the current worker to stop before deciding.');
-          if (command.action !== 'accept' && !command.feedback?.trim()) fail('INVALID_INPUT', 'Explain the requested changes or rejection.');
+          if (command.action !== 'accept' && !command.feedback?.trim()) fail('INVALID_INPUT', override ? 'Explain why you are accepting the known failures.' : 'Explain the requested changes or rejection.');
           this.store.db.prepare('INSERT INTO approvals(id,task_id,gate,action,artifact_id,artifact_digest,commit_sha,feedback,actor,decided_at) VALUES (?,?,?,?,?,?,?,?,?,?)').run(randomUUID(), task.id, 'final', command.action, evidence.id, evidence.sha256_digest, evidence.commit_sha, command.feedback ?? '', 'local-human', now);
           if (command.action === 'request_changes') return this.builds.enqueue(task.id, task.version, 'repair');
-          const result = this.workflow.transition(task.id, task.version, command.action === 'accept' ? 'ACCEPTED' : 'REJECTED', 'final.' + command.action, command.action === 'reject' ? command.feedback : undefined, command.action === 'reject' ? 'The worktree is preserved. Create a revised request if needed.' : undefined);
-          if (command.action === 'accept') this.store.db.prepare('UPDATE tasks SET accepted_commit_sha=? WHERE id=?').run(evidence.commit_sha, task.id);
+          const result = this.workflow.transition(task.id, task.version, command.action === 'accept' || override ? 'ACCEPTED' : 'REJECTED', 'final.' + command.action, command.action === 'reject' ? command.feedback : undefined, command.action === 'reject' ? 'The worktree is preserved. Create a revised request if needed.' : undefined);
+          if (command.action === 'accept' || override) this.store.db.prepare('UPDATE tasks SET accepted_commit_sha=? WHERE id=?').run(evidence.commit_sha, task.id);
+          if (override) this.store.db.prepare('UPDATE workspaces SET head_sha=? WHERE task_id=?').run(evidence.commit_sha, task.id);
           return this.workflow.getTask(result.id);
         });
       }

@@ -23,7 +23,7 @@ export const transitions: Record<TaskStatus, readonly TaskStatus[]> = {
   QUEUED_FOR_BUILD: ['BUILDING', 'BLOCKED'], BUILDING: ['BLOCKED', 'VALIDATING', 'FAILED'],
   VALIDATING: ['REPAIRING', 'CODE_REVIEW', 'BLOCKED', 'FAILED'], CODE_REVIEW: ['VALIDATING', 'REPAIRING', 'FINAL_REVIEW', 'BLOCKED'],
   REPAIRING: ['VALIDATING', 'BLOCKED'], FINAL_REVIEW: ['REPAIRING', 'PLANNING', 'REJECTED', 'ACCEPTED', 'BLOCKED'],
-  ACCEPTED: ['MERGED', 'BLOCKED'], MERGED: [], BLOCKED: ['PLANNING', 'QUEUED_FOR_BUILD'], FAILED: ['PLANNING', 'QUEUED_FOR_BUILD'], REJECTED: [], CANCELLED: ['QUEUED_FOR_BUILD'],
+  ACCEPTED: ['MERGED', 'BLOCKED'], MERGED: [], BLOCKED: ['PLANNING', 'QUEUED_FOR_BUILD', 'ACCEPTED'], FAILED: ['PLANNING', 'QUEUED_FOR_BUILD', 'ACCEPTED'], REJECTED: [], CANCELLED: ['QUEUED_FOR_BUILD', 'ACCEPTED'],
 };
 export function assertTransition(from: TaskStatus, to: TaskStatus) {
   const cancellable = !['ACCEPTED', 'MERGED', 'REJECTED', 'CANCELLED'].includes(from);
@@ -62,7 +62,10 @@ export class Workflow {
       }
       if (next === 'FINAL_REVIEW' || next === 'ACCEPTED') {
         const evidence = this.verifyFinalEvidence?.(task) ?? fail('STALE_EVIDENCE', 'Verified current-commit evidence is required.');
-        if (next === 'ACCEPTED' && !this.store.db.prepare("SELECT id FROM approvals WHERE task_id=? AND gate='final' AND action='accept' AND artifact_id=? AND artifact_digest=? AND commit_sha=? AND actor='local-human'").get(task.id, evidence.id, evidence.sha256_digest, evidence.commit_sha)) fail('APPROVAL_REQUIRED', 'A durable human acceptance of this exact evidence and commit is required.');
+        const override = JSON.parse(evidence.body_json).mode === 'override';
+        if (next === 'ACCEPTED' && task.status !== 'FINAL_REVIEW' && !override) fail('APPROVAL_REQUIRED', 'Failed or blocked work requires explicit override evidence.');
+        if (next === 'FINAL_REVIEW' && override) fail('APPROVAL_REQUIRED', 'Override evidence cannot authorize a passing final review.');
+        if (next === 'ACCEPTED' && !this.store.db.prepare("SELECT id FROM approvals WHERE task_id=? AND gate='final' AND action=? AND artifact_id=? AND artifact_digest=? AND commit_sha=? AND actor='local-human'").get(task.id, override ? 'accept_override' : 'accept', evidence.id, evidence.sha256_digest, evidence.commit_sha)) fail('APPROVAL_REQUIRED', 'A durable human acceptance of this exact evidence and commit is required.');
       }
       if (next === 'MERGED') {
         if (!this.verifyMerged) fail('POLICY_DENIED', 'Merging requires a separately authorized delivery operation.');

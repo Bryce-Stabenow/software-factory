@@ -16,7 +16,7 @@ export class Delivery {
   private project(task: Task) { return this.store.db.prepare('SELECT * FROM projects WHERE id=?').get(task.project_id) as Project; }
   private accepted(task: Task) {
     if (!['ACCEPTED', 'MERGED'].includes(task.status) || !task.accepted_commit_sha) fail('APPROVAL_REQUIRED', 'Accept the reviewed commit before merging or pushing.');
-    if (!this.store.db.prepare("SELECT id FROM approvals WHERE task_id=? AND gate='final' AND action='accept' AND commit_sha=? AND actor='local-human'").get(task.id, task.accepted_commit_sha)) fail('APPROVAL_REQUIRED', 'The exact commit needs recorded human acceptance.');
+    if (!this.store.db.prepare("SELECT id FROM approvals WHERE task_id=? AND gate='final' AND action IN ('accept','accept_override') AND commit_sha=? AND actor='local-human'").get(task.id, task.accepted_commit_sha)) fail('APPROVAL_REQUIRED', 'The exact commit needs recorded human acceptance.');
     const workspace = this.workspaces.verify(task);
     if (this.workspaces.head(workspace) !== task.accepted_commit_sha || this.workspaces.changed(workspace).length) fail('STALE_EVIDENCE', 'The task worktree changed after acceptance. Restore the accepted clean commit before delivery.');
     if (this.store.db.prepare("SELECT r.id FROM agent_runs r JOIN tasks t ON t.id=r.task_id WHERE t.project_id=? AND r.status IN ('queued','starting','running','waiting_permission','stopping')").get(task.project_id)) fail('CONFLICT', 'Wait for this project’s workers to stop before merging or pushing.');

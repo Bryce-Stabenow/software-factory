@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { implementationSchema, executionConfigSchema, type ExecutionConfig, type Project, type Request, type Task, reviewSchema, type WorkspaceDetails } from '../../../../packages/contracts/src/index.js';
+import { actionableFinding, classifyFailure } from '../../../../packages/contracts/src/failures.js';
 import type { Store } from '../persistence/store.js';
 import { digest, fail, FactoryError, Workflow } from '../workflows/engine.js';
 import { CodexReviewer, CodexImplementer, type ReviewAdapter, type ImplementationAdapter, type PlannerEvent, type VerificationResult } from './codex.js';
@@ -142,7 +143,7 @@ export class BuildJobs {
         }
         catch (error) {
           if (!(error instanceof CodexError) || !['VALIDATION_FAILED', 'VALIDATION_TIMEOUT'].includes(error.code) || job.controller.signal.aborted) throw error;
-          this.finishRun(job, 'failed', error.message);
+          this.finishRun(job, 'failed', error.message, error.code);
           repairReason = error.message;
         }
         if (!repairReason) {
@@ -152,7 +153,7 @@ export class BuildJobs {
           this.nextRun(job, 'review');
           const review = await this.review(job);
           this.finishRun(job);
-          if (review.verdict === 'blocked') fail('POLICY_DENIED', 'Independent review is blocked: ' + review.summary);
+          if (review.verdict === 'blocked') throw new CodexError('REVIEW_BLOCKED', 'Independent review is blocked: ' + review.summary);
           if (review.verdict === 'pass' && !review.findings.some(finding => ['critical', 'high'].includes(finding.severity))) {
             task = this.guard(job, 'CODE_REVIEW');
             this.store.transaction(() => {
@@ -163,6 +164,7 @@ export class BuildJobs {
             break;
           }
           repairReason = 'Independent review requested changes: ' + review.summary;
+          if (!review.findings.some(actionableFinding)) throw new CodexError('REVIEW_BLOCKED', repairReason + ' No actionable code defect was identified; inspect the classified findings before recovery.');
         }
         task = this.workflow.getTask(task.id);
         this.assertRepairBudget(task);
@@ -176,13 +178,14 @@ export class BuildJobs {
       const stopped = job.controller.signal.aborted;
       const code = stopped ? 'CANCELLED' : error instanceof CodexError || error instanceof FactoryError ? error.code : 'BUILD_FAILED';
       const message = stopped ? 'Work stopped. The task worktree and partial edits were preserved.' : error instanceof CodexError || error instanceof FactoryError ? error.message : 'Implementation or validation failed. The worktree and logs were preserved for inspection and recovery.';
+      const failure = classifyFailure(code, message);
       this.store.transaction(() => {
         this.store.db.prepare("UPDATE agent_runs SET status=?,finished_at=?,error_code=?,summary=COALESCE(summary,?) WHERE id=? AND status IN ('queued','starting','running','stopping')").run(stopped ? this.closing ? 'interrupted' : 'cancelled' : 'failed', new Date().toISOString(), code, message, job.id);
         this.store.db.prepare("UPDATE validation_runs SET status=?,reason=?,finished_at=? WHERE run_id=? AND status='running'").run(stopped ? this.closing ? 'interrupted' : 'cancelled' : code === 'VALIDATION_TIMEOUT' ? 'timed_out' : 'failed', message, new Date().toISOString(), job.id);
         this.store.db.prepare("UPDATE initialization_runs SET status=?,reason=?,finished_at=? WHERE run_id=? AND status='running'").run(stopped ? this.closing ? 'interrupted' : 'cancelled' : 'failed', message, new Date().toISOString(), job.id);
         const task = this.workflow.getTask(job.taskId);
-        if (['QUEUED_FOR_BUILD', 'BUILDING', 'VALIDATING', 'CODE_REVIEW', 'REPAIRING'].includes(task.status)) this.workflow.transition(task.id, task.version, 'BLOCKED', 'build.blocked', message, 'Inspect the preserved worktree and checks, then explicitly resume implementation or re-run validation.');
-        this.store.event(stopped ? 'build.interrupted' : 'build.failed', task.project_id, task.id, { runId: job.id, code, message });
+        if (['QUEUED_FOR_BUILD', 'BUILDING', 'VALIDATING', 'CODE_REVIEW', 'REPAIRING'].includes(task.status)) this.workflow.transition(task.id, task.version, 'BLOCKED', 'build.blocked', message, failure.recovery);
+        this.store.event(stopped ? 'build.interrupted' : 'build.failed', task.project_id, task.id, { runId: job.id, code, message, failure });
       });
     } finally { if (heartbeat) clearInterval(heartbeat); release?.(); }
   }
@@ -227,10 +230,10 @@ export class BuildJobs {
   }
   private assertRepairBudget(task: Task) {
     const count = this.store.db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE task_id=? AND stage='repair' AND approved_plan_id=? AND (error_code IS NULL OR error_code!='INVALID_IMPLEMENTATION')").get(task.id, task.approved_plan_revision_id) as { n: number };
-    if (count.n >= 3) fail('POLICY_DENIED', 'The three-repair limit for this approved plan is exhausted. Inspect findings and logs; revise the request in a new task if more work is needed.');
+    if (count.n >= 3) fail('REPAIR_LIMIT', 'The three-repair limit for this approved plan is exhausted. Inspect findings and logs; accept with an override or revise the request in a new task if more work is needed.');
   }
-  private finishRun(job: BuildJob, status = 'succeeded', message?: string) {
-    this.store.db.prepare("UPDATE agent_runs SET status=?,finished_at=?,exit_code=?,summary=COALESCE(summary,?) WHERE id=? AND status IN ('starting','running')").run(status, new Date().toISOString(), status === 'succeeded' ? 0 : 1, message ?? null, job.id);
+  private finishRun(job: BuildJob, status = 'succeeded', message?: string, code?: string) {
+    this.store.db.prepare("UPDATE agent_runs SET status=?,finished_at=?,exit_code=?,summary=COALESCE(summary,?),error_code=? WHERE id=? AND status IN ('starting','running')").run(status, new Date().toISOString(), status === 'succeeded' ? 0 : 1, message ?? null, code ?? null, job.id);
   }
   private nextRun(job: BuildJob, stage: 'validate' | 'review' | 'repair') {
     job.controller.signal.throwIfAborted();
@@ -320,6 +323,7 @@ Defects and human feedback: ${JSON.stringify(failures)}`),
     const checks = this.store.db.prepare('SELECT name,commit_sha,status,exit_code,log_text FROM validation_runs WHERE task_id=? AND commit_sha=? ORDER BY rowid').all(task.id, details.currentHead);
     const result = reviewSchema.parse(await this.reviewer.review({ cwd: snapshot.path, files: snapshot.files, commitSha: details.currentHead, signal: job.controller.signal, model: JSON.parse(task.provider_policy_json).reviewModel ?? undefined, onEvent: event => this.event(job, event),
       prompt: redact(`Independently review this exact committed change. Read relevant source and tests. Echo commitSha exactly. Block on insufficient evidence; request changes for actionable defects.
+Classify every finding with category (code_defect, environment, evidence, scope, other) and origin (introduced, pre_existing, unknown). Severity describes impact, not cause. Explain concrete evidence for the category and origin in the rationale. Request changes only for actionable code defects introduced by this change. Report existing defects, unavailable dependencies, missing evidence, and new scope accurately; do not send them into automatic code repair. Use blocked when these prevent establishing correctness.
 Task: ${task.id}
 Commit: ${details.currentHead}
 Base: ${details.reviewBaseSha}
