@@ -176,10 +176,15 @@ button { transition: background-color 120ms, color 120ms, border-color 120ms; }
 .view-empty h2 { font-size: 18px; font-weight: 550; letter-spacing: -.4px; }
 .view-empty p { max-width: 350px; font-size: 13px; margin: 12px 0 22px; }
 .empty-shortcut { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--faint); margin-top: 15px; }
-.kanban-board { display: grid; grid-auto-flow: column; grid-auto-columns: 244px; grid-template-rows: minmax(max-content, 1fr); align-items: stretch; gap: 16px; padding: 20px 24px 32px; overflow: auto; flex: 1; min-height: 0; scroll-padding-top: 44px; }
-/* One shared content-height row keeps short and empty columns sticky to the end. */
-.kanban-column { width: 244px; flex-shrink: 0; }
-.kanban-heading { position: sticky; top: 0; z-index: 1; background: var(--canvas); display: flex; gap: 8px; align-items: center; padding: 3px 4px 15px; }
+/* Keep the sticky layer local to the board, beneath portalled overlays. */
+.kanban-board { overflow: auto; isolation: isolate; flex: 1; min-height: 0; scroll-padding-top: 56px; }
+/* Span the full scrollable width and height, including empty/short columns. */
+.kanban-content { width: max-content; min-width: 100%; min-height: 100%; }
+.kanban-headers,.kanban-columns { display: grid; grid-auto-flow: column; grid-auto-columns: 244px; gap: 16px; padding-inline: 24px; }
+.kanban-headers { position: sticky; top: 0; z-index: 1; min-height: 44px; background: var(--canvas); }
+.kanban-columns { padding-top: 12px; padding-bottom: 32px; }
+.kanban-column { min-width: 0; }
+.kanban-heading { display: flex; gap: 8px; align-items: center; padding: 12px 4px; }
 .kanban-heading h3 { font-size: 12px; font-weight: 550; }
 .kanban-heading>span:last-child { color: var(--faint); margin-left: 3px; font-size: 11px; }
 .column-indicator { width: 7px; height: 7px; border-radius: 50%; background: currentColor; color: var(--faint); }
